@@ -1,0 +1,14 @@
+{
+  "ganar": 1.0,
+  "perder": 0.0,
+  "vida_quitada": 0.5,
+  "vida_perdida": -0.5,
+  "coger_escopeta": 0.0,
+  "sostener_escopeta": 0.001,
+  "perseguir": 0.02,
+  "disparo_punteria": 0.05,
+  "huir": 0.02,
+  "choque_pared": -0.003,
+  "bala_pared": -0.03,
+  "posiciones_aleatorias": 100.0
+}

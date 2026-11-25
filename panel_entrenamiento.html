@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Entrenamiento en vivo - RED vs PINK</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --verde:#33ff33; --rojo:#ff4d6d; --azul:#7db0ff; --rosa:#ff69b4; --ambar:#ffb347; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#000; color:var(--verde); font-family:Consolas,"Courier New",monospace; padding:14px 18px 40px; }
+  body::after { content:""; position:fixed; inset:0; pointer-events:none;
+    background:repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px, rgba(0,0,0,.18) 3px); }
+  h1 { margin:0 0 4px; font-size:20px; text-shadow:0 0 8px var(--verde); }
+  h2 { margin:0 0 6px; font-size:15px; }
+  .sub { opacity:.75; font-size:13px; margin-bottom:12px; }
+  .caja { border:1px solid var(--verde); background:rgba(0,14,0,.9); padding:10px 14px; margin-bottom:14px; }
+  .fila { display:flex; flex-wrap:wrap; gap:14px; }
+  .fila > .caja { flex:1 1 520px; }
+  .grande { font-size:30px; text-shadow:0 0 10px var(--verde); }
+  .barra { height:12px; border:1px solid var(--verde); margin:6px 0; }
+  .barra i { display:block; height:100%; background:var(--verde); box-shadow:0 0 8px var(--verde); }
+  a, button { color:var(--verde); background:#031a03; border:1px solid var(--verde); padding:6px 12px;
+    font-family:inherit; font-size:14px; text-decoration:none; cursor:pointer; display:inline-block; margin-right:8px; }
+  a:hover, button:hover { background:#0a3a0a; }
+  canvas { width:100%; height:auto; display:block; }
+  table { border-collapse:collapse; font-size:13px; width:100%; }
+  th, td { border-bottom:1px solid #134d13; padding:3px 8px; text-align:right; }
+  th:first-child, td:first-child { text-align:left; }
+  .leyenda { font-size:12px; margin-top:4px; display:flex; flex-wrap:wrap; gap:4px 14px; }
+  .leyenda span::before { content:"■ "; color:var(--c); }
+  .ok { color:var(--ambar); }
+  .cursor::after { content:"█"; animation:p 1s steps(1) infinite; } @keyframes p { 50% { opacity:0; } }
+</style>
+</head>
+<body>
+<h1>&gt; ENTRENAMIENTO EN VIVO <span class="cursor"></span></h1>
+<div class="sub" id="sub"></div>
+
+<div class="caja" id="estado"></div>
+
+<div class="fila">
+  <div class="caja"><h2>¿Quién gana? (% de 20 partidas de prueba por ronda)</h2><canvas id="c1" width="640" height="300"></canvas><div class="leyenda" id="l1"></div></div>
+  <div class="caja"><h2>¿Qué han descubierto? (% de partidas donde ocurre)</h2><canvas id="c2" width="640" height="300"></canvas><div class="leyenda" id="l2"></div></div>
+</div>
+
+<div class="caja"><h2>Últimas rondas</h2><table id="tabla"></table></div>
+
+<script src="modelos/progreso.js" onerror="window.SIN_DATOS=true"></script>
+<script>
+const $ = id => document.getElementById(id);
+const NOMBRES = {
+  coge_pistola: ["coge la escopeta", "#ffe000"], disparo: ["dispara", "#ff9f40"],
+  golpe_bala: ["acierta un disparo", "#ff4d6d"], sobrecalentada: ["la escopeta se pone al rojo", "#ff2a2a"],
+  coge_caja: ["coge la caja", "#c98a3c"], suelta_caja: ["suelta la caja", "#8fd16a"],
+  coge_veneno: ["coge el veneno", "#b070ff"], lanza_veneno: ["lanza el veneno", "#e070ff"],
+  bebe_veneno: ["bebe el veneno (muere)", "#ffffff"],
+};
+
+function lineas(cv, series, filas) {
+  const g = cv.getContext("2d"), W = cv.width, H = cv.height, L = 38, B = 22, T = 8, R = 10;
+  g.clearRect(0, 0, W, H);
+  g.font = "11px Consolas"; g.textAlign = "right"; g.fillStyle = "#1f8f1f"; g.strokeStyle = "#0e3d0e"; g.lineWidth = 1;
+  for (let v = 0; v <= 100; v += 25) {
+    const y = T + (H - T - B) * (1 - v / 100);
+    g.beginPath(); g.moveTo(L, y); g.lineTo(W - R, y); g.stroke(); g.fillText(v + "%", L - 5, y + 4);
+  }
+  const n = filas.length, maxR = Math.max(1, filas[n - 1].ronda);
+  const X = r => L + (W - L - R) * (maxR === 0 ? 0 : r / maxR);
+  g.textAlign = "center"; g.fillText("ronda " + maxR, W - R - 18, H - 6); g.fillText("0", L, H - 6);
+  for (const s of series) {
+    g.strokeStyle = s.color; g.lineWidth = 2; g.beginPath();
+    filas.forEach((f, i) => { const y = T + (H - T - B) * (1 - Math.min(100, f[s.clave]) / 100);
+      i ? g.lineTo(X(f.ronda), y) : g.moveTo(X(f.ronda), y); });
+    g.stroke();
+    const u = filas[n - 1]; g.fillStyle = s.color;
+    g.beginPath(); g.arc(X(u.ronda), T + (H - T - B) * (1 - Math.min(100, u[s.clave]) / 100), 3.5, 0, 7); g.fill();
+  }
+}
+function leyenda(id, series) {
+  $(id).innerHTML = series.map(s => `<span style="--c:${s.color}">${s.nombre}</span>`).join("");
+}
+
+function dibujar() {
+  if (window.SIN_DATOS || typeof PROGRESO === "undefined") {
+    $("estado").innerHTML = "Esperando datos... Lanza <b>entrenar.py</b> y esta página se actualizará sola.";
+    return false;
+  }
+  const filas = PROGRESO.filas, u = filas[filas.length - 1], total = PROGRESO.total;
+  const hechas = u.ronda, terminado = hechas >= total;
+  const segs = filas.slice(1).map(f => f.segundos), media = segs.length ? segs.reduce((a, b) => a + b, 0) / segs.length : 0;
+  const quedan = Math.max(0, total - hechas) * media;
+  const fmt = s => s >= 3600 ? (s / 3600).toFixed(1) + " h" : s >= 60 ? Math.round(s / 60) + " min" : Math.round(s) + " s";
+  $("sub").textContent = terminado ? "ENTRENAMIENTO TERMINADO" : "Entrenando... esta página se refresca sola cada 10 s.";
+  $("estado").innerHTML =
+    `<div class="grande">Ronda ${hechas} / ${total} ${terminado ? "✔" : ""}</div>` +
+    `<div class="barra"><i style="width:${hechas / total * 100}%"></i></div>` +
+    `<div>🏃 Corridas jugadas: <b>${(PROGRESO.episodios || 0).toLocaleString("es")}</b> (partidas de entrenamiento)</div>` +
+    `<div>${terminado ? "Listo." : "Tiempo restante aproximado: " + (media ? fmt(quedan) : "calculando...")} ` +
+    `· última ronda: ${u.segundos} s</div><br>` +
+    `<a href="visor.html" target="_blank">▶ Ver una partida de la ronda ${hechas}</a>` +
+    `<button onclick="location.reload()">⟳ Refrescar ya</button>` +
+    `<div class="sub" style="margin-top:8px">(Si el visor ya estaba abierto, pulsa F5 en él para ver la partida más nueva.)</div>`;
+
+  const s1 = [{ clave: "gana_red", nombre: "gana RED", color: "#7db0ff" }, { clave: "gana_pink", nombre: "gana PINK", color: "#ff69b4" },
+              { clave: "ambos", nombre: "mueren los dos (se acaba el tiempo)", color: "#ffb347" }];
+  const s2 = Object.keys(NOMBRES).map(k => ({ clave: k, nombre: NOMBRES[k][0], color: NOMBRES[k][1] }));
+  lineas($("c1"), s1, filas); leyenda("l1", s1);
+  lineas($("c2"), s2, filas); leyenda("l2", s2);
+
+  const cab = ["ronda", "red %", "pink %", "ambos %", "escopeta %", "disparos/part.", "aciertos %", "duración s"];
+  const fila = f => [f.ronda, f.gana_red, f.gana_pink, f.ambos, f.coge_pistola, f.disparos, f.golpe_bala, f.duracion];
+  $("tabla").innerHTML = "<tr>" + cab.map(c => `<th>${c}</th>`).join("") + "</tr>" +
+    filas.slice(-8).reverse().map(f => "<tr>" + fila(f).map(v => `<td>${v}</td>`).join("") + "</tr>").join("");
+  return !terminado;
+}
+if (dibujar() || window.SIN_DATOS) setTimeout(() => location.reload(), 10000);
+</script>
+</body>
+</html>

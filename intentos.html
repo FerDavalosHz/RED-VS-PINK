@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Intentos en vivo - RED vs PINK</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --verde:#33ff33; --rojo:#ff4d6d; --azul:#7db0ff; --rosa:#ff69b4; --ambar:#ffb347; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#000; color:var(--verde); font-family:Consolas,"Courier New",monospace; padding:12px 16px 30px; }
+  body::after { content:""; position:fixed; inset:0; pointer-events:none;
+    background:repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px, rgba(0,0,0,.18) 3px); }
+  h1 { margin:0 0 4px; font-size:20px; text-shadow:0 0 8px var(--verde); }
+  .sub { opacity:.75; font-size:13px; margin-bottom:10px; }
+  .fila { display:flex; flex-wrap:wrap; gap:14px; align-items:flex-start; }
+  canvas { max-width:100%; height:auto; background:rgba(0,12,0,.92); border:2px solid var(--verde); box-shadow:0 0 14px rgba(51,255,51,.35); }
+  .lateral { width:340px; display:flex; flex-direction:column; gap:10px; }
+  .caja { border:1px solid var(--verde); background:rgba(0,14,0,.92); padding:9px 12px; font-size:14px; line-height:1.5; }
+  .grande { font-size:19px; text-shadow:0 0 8px var(--verde); }
+  button, select, a { background:#031a03; color:var(--verde); border:1px solid var(--verde); padding:6px 10px;
+    font-family:inherit; font-size:14px; cursor:pointer; text-decoration:none; display:inline-block; }
+  button:hover, a:hover { background:#0a3a0a; }
+  .botones { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px; }
+  #lista { display:flex; flex-wrap:wrap; gap:3px; max-height:150px; overflow-y:auto; }
+  #lista button { padding:1px 5px; font-size:11px; }
+  #lista button.actual { background:var(--verde); color:#000; }
+  .r { color:var(--azul); } .p { color:var(--rosa); } .a { color:var(--ambar); }
+  .vidas { letter-spacing:3px; }
+  .barra { height:9px; border:1px solid #1d6b1d; margin:3px 0; } .barra i { display:block; height:100%; width:0; background:var(--verde); }
+</style>
+</head>
+<body>
+<h1>&gt; INTENTOS DE LAS IAs EN VIVO</h1>
+<div class="sub">Partidas grabadas mientras entrenan (1 de cada 40). Se añaden solas. Usa ◀ ▶ para ir de una en una. &nbsp;<a href="panel_entrenamiento.html" target="_blank">📈 ver gráficas</a></div>
+
+<div class="fila">
+  <canvas id="arena"></canvas>
+  <div class="lateral">
+    <div class="caja"><div class="grande">🏃 Corridas jugadas: <span id="total">0</span></div>
+      <div class="sub" style="margin:2px 0 0">cada corrida = una partida de las IAs. Aquí grabo 1 de cada 40.</div></div>
+    <div class="caja"><div class="grande" id="titulo">Esperando el primer intento...</div><div id="detalle"></div></div>
+    <div class="caja">
+      <div class="botones">
+        <button id="b-ant">◀ Anterior</button><button id="b-pausa">⏸ Pausa</button><button id="b-sig">Siguiente ▶</button>
+      </div>
+      <div class="botones">
+        <button id="b-ultimo">⏭ Al más reciente</button>
+        <select id="vel"><option value="1">1x</option><option value="2" selected>2x</option><option value="4">4x</option></select>
+        <label style="align-self:center"><input type="checkbox" id="ver-vision" checked> 👁 ver lo que ven</label>
+      </div>
+      <div>Al acabar un intento:
+        <select id="modo"><option value="orden">pasar al siguiente (en orden)</option>
+          <option value="ultimo">saltar al más reciente</option><option value="parar">quedarse parado</option></select></div>
+      <div class="sub" style="margin:6px 0 0">Teclado: ← → cambian de intento, espacio = pausa</div>
+    </div>
+    <div class="caja"><div>Últimos 30 intentos:</div><div id="stats"></div></div>
+    <div class="caja"><div>Todos los intentos (clic para verlo):</div><div id="lista"></div></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let M = null, FPSV = 30, FPD = 10, TMAX = 10, TOTAL = 0;
+const lista = []; const ids = new Set();
+let idx = -1, pos = 0, jugando = true, espera = 0, ultimo = performance.now();
+const NOM = { c: "caja", p: "pistola", v: "veneno" };
+
+// ---------- Cargar datos (se vuelve a pedir el archivo cada 8 s) ----------
+// Añade intentos a la lista sin repetir, y sigue mostrando el que estabas viendo
+// Clave de un intento: no solo su número, también cómo fue. Así dos intentos distintos que
+// tuvieran el mismo número (pasaba al reiniciar el entrenamiento) no se confunden ni se borran.
+const clave = it => it.id + "|" + it.ronda + "|" + it.aprende + "|" + it.puntos + "|" + it.frames.length;
+function incorporar(intentos) {
+  const actual = lista[idx] || null;
+  let nuevos = 0;
+  for (const it of intentos) {
+    const k = clave(it);
+    if (ids.has(k)) continue;
+    ids.add(k);
+    it.pistola = it.frames.some(f => f[3].some(o => o[0] === "p" && o[4]));   // ¿alguien cogió la escopeta?
+    it.dispara = it.frames.some(f => f[4].some(q => q[0] === "b"));           // ¿hubo disparos?
+    lista.push(it); nuevos++;
+  }
+  if (!nuevos) return;
+  lista.sort((a, b) => a.id - b.id);
+  while (lista.length > 1600) ids.delete(clave(lista.shift()));               // tope de memoria
+  idx = actual === null ? -1 : lista.indexOf(actual);
+  if (idx < 0) irA(0); else refrescarLista();
+  estadisticas();
+}
+function fusionar() {
+  const D = window.INTENTOS; if (!D) return;
+  M = D.mapa; FPSV = D.fps; FPD = D.frames_por_seg; TMAX = D.tiempo_max;
+  TOTAL = D.total || 0; $("total").textContent = TOTAL.toLocaleString("es");
+  incorporar(D.intentos);
+}
+function cargarScript(src, alCargar) {
+  const s = document.createElement("script"); s.src = src;
+  s.onload = () => { if (alCargar) alCargar(); s.remove(); }; s.onerror = () => s.remove();
+  document.head.appendChild(s);
+}
+function pedirDatos() { cargarScript("modelos/intentos.js?t=" + Date.now(), fusionar); }
+
+// HISTORIAL: los intentos guardados en disco (sobreviven a los reinicios del entrenamiento)
+const lotesCargados = new Set();
+function cargarLotes() {
+  window.LOTES_INDICE = null;
+  cargarScript("modelos/lotes/indice.js?t=" + Date.now(), () => {
+    for (const nombre of (window.LOTES_INDICE || [])) {
+      if (lotesCargados.has(nombre)) continue;
+      lotesCargados.add(nombre);
+      cargarScript("modelos/lotes/" + nombre, () => {
+        const L = window.LOTES || [];
+        while (L.length) incorporar(L.shift().intentos);
+      });
+    }
+  });
+}
+pedirDatos(); cargarLotes();
+setInterval(pedirDatos, 8000); setInterval(cargarLotes, 20000);
+
+// ---------- Navegación ----------
+function irA(i) { if (i < 0 || i >= lista.length) return; idx = i; pos = 0; espera = 0; info(); refrescarLista(); }
+function siguiente() { if (idx + 1 < lista.length) irA(idx + 1); }
+function anterior() { if (idx > 0) irA(idx - 1); }
+$("b-ant").onclick = anterior; $("b-sig").onclick = siguiente;
+$("b-ultimo").onclick = () => irA(lista.length - 1);
+$("b-pausa").onclick = () => { jugando = !jugando; $("b-pausa").textContent = jugando ? "⏸ Pausa" : "▶ Seguir"; };
+addEventListener("keydown", e => {
+  if (e.code === "ArrowRight") siguiente(); else if (e.code === "ArrowLeft") anterior();
+  else if (e.code === "Space") { e.preventDefault(); $("b-pausa").click(); }
+});
+
+const ICONO = { red: ["▲", "r"], pink: ["■", "p"], ambos_mueren: ["☠", "a"] };
+function refrescarLista() {
+  $("lista").innerHTML = lista.map((it, i) => {
+    const [ic, cl] = ICONO[it.ganador];
+    return `<button class="${i === idx ? "actual" : ""}" onclick="irA(${i})"><span class="${i === idx ? "" : cl}">${ic}</span>${it.id}</button>`;
+  }).join("");
+  const a = $("lista").querySelector(".actual"); if (a) a.scrollIntoView({ block: "nearest" });
+}
+function estadisticas() {
+  const u = lista.slice(-30), n = u.length;
+  const pc = f => Math.round(100 * u.filter(f).length / n);
+  $("stats").innerHTML =
+    `<span class="r">▲ red ${pc(i => i.ganador === "red")}%</span> · <span class="p">■ pink ${pc(i => i.ganador === "pink")}%</span> · ` +
+    `<span class="a">☠ ambos ${pc(i => i.ganador === "ambos_mueren")}%</span><br>` +
+    `cogen la escopeta: ${pc(i => i.pistola)}% · disparan: ${pc(i => i.dispara)}%`;
+}
+function info() {
+  const it = lista[idx]; if (!it) return;
+  $("titulo").textContent = `Corrida nº ${(it.corrida || it.id).toLocaleString("es")} · ronda ${it.ronda}`;
+  const gan = it.ganador === "red" ? "▲ gana RED" : it.ganador === "pink" ? "■ gana PINK" : "☠ mueren los dos";
+  $("detalle").innerHTML = `aprendía: <b>${it.aprende.toUpperCase()}</b> (el otro estaba congelado)<br>` +
+    `resultado: <b>${gan}</b> · puntos de quien aprende: ${it.puntos}<br>` +
+    `<span id="hud"></span>`;
+}
+
+// ---------- Dibujo ----------
+const S = 18, arena = $("arena"), g = arena.getContext("2d");
+const colorCalor = c => `rgb(255,${Math.round(224 * (1 - c))},0)`;
+function objeto(tipo, cx, cy, calor, esc) {
+  const s = S * (esc || 1); g.save(); g.translate(cx, cy);
+  if (tipo === "caja") {
+    g.fillStyle = "#b8742a"; g.fillRect(-.4 * s, -.4 * s, .8 * s, .8 * s); g.strokeStyle = "#5a360f"; g.lineWidth = 2;
+    g.strokeRect(-.4 * s, -.4 * s, .8 * s, .8 * s); g.beginPath(); g.moveTo(-.4 * s, -.4 * s); g.lineTo(.4 * s, .4 * s); g.moveTo(.4 * s, -.4 * s); g.lineTo(-.4 * s, .4 * s); g.stroke();
+  } else if (tipo === "pistola") {
+    g.fillStyle = colorCalor(calor); g.shadowColor = colorCalor(calor); g.shadowBlur = 6 + 10 * calor;
+    g.fillRect(-.45 * s, -.25 * s, .9 * s, .32 * s); g.fillRect(-.4 * s, -.1 * s, .28 * s, .5 * s);
+  } else if (tipo === "veneno") {
+    g.fillStyle = "#a020f0"; g.shadowColor = "#d070ff"; g.shadowBlur = 8; g.beginPath(); g.arc(0, .1 * s, .34 * s, 0, 7); g.fill(); g.fillRect(-.1 * s, -.42 * s, .2 * s, .25 * s);
+  }
+  g.restore();
+}
+function escalera(e) {
+  const x = e.x * S, y = e.y * S, w = e.w * S, h = e.h * S;
+  g.fillStyle = "#3a2a10"; g.fillRect(x, y, w, h); g.strokeStyle = "#d2aa5a"; g.lineWidth = 2; g.beginPath();
+  if (e.h >= e.w) { g.moveTo(x + 3, y); g.lineTo(x + 3, y + h); g.moveTo(x + w - 3, y); g.lineTo(x + w - 3, y + h); for (let py = y + 5; py < y + h; py += 8) { g.moveTo(x + 3, py); g.lineTo(x + w - 3, py); } }
+  else { g.moveTo(x, y + 3); g.lineTo(x + w, y + 3); g.moveTo(x, y + h - 3); g.lineTo(x + w, y + h - 3); for (let px = x + 5; px < x + w; px += 8) { g.moveTo(px, y + 3); g.lineTo(px, y + h - 3); } }
+  g.stroke();
+}
+function jugador(nombre, p, ms, vivoAlpha) {
+  g.save(); g.translate(p.x * S, p.y * S); g.globalAlpha = p.vidas > 0 ? 1 : 0.28;
+  if (p.ven && p.vidas > 0) { g.strokeStyle = "#7dff3a"; g.lineWidth = 2; g.shadowColor = "#7dff3a"; g.shadowBlur = 12; g.beginPath(); g.arc(0, 0, S * (.75 + .1 * Math.sin(ms / 90)), 0, 7); g.stroke(); g.shadowBlur = 0; }
+  g.rotate(Math.atan2(p.dy, p.dx)); g.shadowColor = nombre === "red" ? "#3b82f6" : "#ff69b4"; g.shadowBlur = 10; g.lineWidth = 2;
+  if (nombre === "red") { g.fillStyle = "#3b82f6"; g.strokeStyle = "#b5d0ff"; g.beginPath(); g.moveTo(.55 * S, 0); g.lineTo(-.42 * S, .45 * S); g.lineTo(-.42 * S, -.45 * S); g.closePath(); g.fill(); g.stroke(); }
+  else { g.fillStyle = "#ff69b4"; g.strokeStyle = "#ffd0e8"; g.fillRect(-.4 * S, -.4 * S, .8 * S, .8 * S); g.strokeRect(-.4 * S, -.4 * S, .8 * S, .8 * S); g.beginPath(); g.moveTo(.4 * S, 0); g.lineTo(.62 * S, 0); g.stroke(); }
+  g.restore();
+  if (p.obj) objeto(NOM[p.obj], p.x * S, p.y * S - .95 * S, p.calor, .7);
+}
+// ---- RANGO DE VISIÓN: la zona que ve cada criatura (los muros y las cajas la tapan) ----
+function setMuros(MP) {
+  if (!MP._muros) {
+    const s = new Set();
+    for (const p of MP.paredes) for (let x = p.x; x < p.x + p.w; x++) for (let y = p.y; y < p.y + p.h; y++) s.add(x + "," + y);
+    MP._muros = s;
+  }
+  return MP._muros;
+}
+function dibujarVision(MP, objetos, p, rgb, R, campo) {
+  if (p.vidas <= 0) return;
+  const muros = setMuros(MP);
+  const cajas = new Set(objetos.filter(o => o[0] === "c" && !o[4]).map(o => Math.floor(o[1]) + "," + Math.floor(o[2])));
+  // Cono hacia donde mira (el campo en grados); con 360 es un círculo completo
+  const entero = campo >= 360, mitad = campo * Math.PI / 360, rumbo = Math.atan2(p.dy, p.dx);
+  g.beginPath(); if (!entero) g.moveTo(p.x * S, p.y * S);
+  for (let k = 0, N = 96; k <= N; k++) {                   // 96 rayos desde la criatura
+    if (entero && k === N) break;
+    const ang = entero ? 2 * Math.PI * k / N : rumbo - mitad + 2 * mitad * k / N, dx = Math.cos(ang), dy = Math.sin(ang);
+    let d = 0;
+    while (d < R) {
+      const nx = p.x + dx * (d + .3), ny = p.y + dy * (d + .3), cx = Math.floor(nx), cy = Math.floor(ny);
+      if (cx < 0 || cy < 0 || cx >= MP.ancho || cy >= MP.alto || muros.has(cx + "," + cy) || cajas.has(cx + "," + cy)) break;
+      d += .3;
+    }
+    const X = (p.x + dx * d) * S, Y = (p.y + dy * d) * S;
+    (k || !entero) ? g.lineTo(X, Y) : g.moveTo(X, Y);
+  }
+  g.closePath(); g.fillStyle = `rgba(${rgb},.15)`; g.fill();
+  g.strokeStyle = `rgba(${rgb},.6)`; g.lineWidth = 1.5; g.stroke();
+}
+// Mezcla dos fotos para que el movimiento se vea suave
+function jug(a, b, u) {
+  const L = k => a[k] + (b[k] - a[k]) * u;
+  return { x: L(0), y: L(1), vidas: a[2], dx: a[3] || 1, dy: a[4], obj: a[5], calor: a[6], ven: a[7] };
+}
+// La víbora: una serpiente verde que ondula, con su barra de vida (20 perdigones)
+function dibujarVibora(g, S, x, y, vida, dx, dy, ms) {
+  g.save(); g.translate(x * S, y * S); g.rotate(Math.atan2(dy, dx));
+  g.shadowColor = "#9cff3a"; g.shadowBlur = 8; g.strokeStyle = "#5fb814"; g.lineWidth = S * .36; g.lineCap = "round"; g.lineJoin = "round";
+  g.beginPath();
+  for (let i = 0; i <= 8; i++) { const u = -i * S * .14, w = Math.sin(ms / 110 - i * .9) * S * .13; i ? g.lineTo(u, w) : g.moveTo(u, w); }
+  g.stroke();
+  g.fillStyle = "#b6ff4a"; g.beginPath(); g.ellipse(S * .14, 0, S * .3, S * .22, 0, 0, 7); g.fill();
+  g.shadowBlur = 0; g.fillStyle = "#ff2040"; g.beginPath(); g.arc(S * .22, -S * .1, S * .05, 0, 7); g.arc(S * .22, S * .1, S * .05, 0, 7); g.fill();
+  g.restore();
+  g.fillStyle = "#3a0a14"; g.fillRect(x * S - S * .5, y * S - S * .8, S, 3);
+  g.fillStyle = "#ff4d6d"; g.fillRect(x * S - S * .5, y * S - S * .8, S * Math.max(0, vida) / 20, 3);
+}
+function dibujar(it, pos, ms) {
+  const a = Math.floor(pos), b = Math.min(a + 1, it.frames.length - 1), u = pos - a, fa = it.frames[a], fb = it.frames[b];
+  const MP = it.mapa || M;                       // el mapa que tenía ESE intento
+  arena.width = MP.ancho * S; arena.height = MP.alto * S;
+  g.fillStyle = "#021002"; g.fillRect(0, 0, arena.width, arena.height);
+  g.strokeStyle = "#0a2e0a"; g.lineWidth = 1; g.beginPath();
+  for (let x = 0; x <= MP.ancho; x++) { g.moveTo(x * S + .5, 0); g.lineTo(x * S + .5, MP.alto * S); }
+  for (let y = 0; y <= MP.alto; y++) { g.moveTo(0, y * S + .5); g.lineTo(MP.ancho * S, y * S + .5); }
+  g.stroke();
+  const pr = jug(fa[1], fb[1], u), pp = jug(fa[2], fb[2], u);
+  if ($("ver-vision").checked) {                           // lo que ve cada una (debajo de las paredes)
+    const R = it.vision || 8, C = it.campo || 360;
+    dibujarVision(MP, fa[3], pr, "59,130,246", R, C); dibujarVision(MP, fa[3], pp, "255,105,180", R, C);
+  }
+  for (const e of (MP.escaleras || [])) escalera(e);
+  g.save(); g.shadowColor = "#33ff33"; g.shadowBlur = 8;
+  for (const p of MP.paredes) { g.fillStyle = "#0d6b0d"; g.fillRect(p.x * S, p.y * S, p.w * S, p.h * S); g.strokeStyle = "#33ff33"; g.lineWidth = 2; g.strokeRect(p.x * S + 1, p.y * S + 1, p.w * S - 2, p.h * S - 2); }
+  g.restore();
+  for (const o of fa[3]) if (!o[4]) objeto(NOM[o[0]], o[1] * S, o[2] * S, o[3]);
+  for (const q of fa[4]) {
+    g.save(); g.shadowBlur = 10;
+    if (q[0] === "b") { g.fillStyle = "#fff6a0"; g.shadowColor = "#ffe000"; g.fillRect(q[1] * S - 3, q[2] * S - 3, 6, 6); }
+    else { g.fillStyle = "#c050ff"; g.shadowColor = "#c050ff"; g.beginPath(); g.arc(q[1] * S, q[2] * S, 5, 0, 7); g.fill(); }
+    g.restore();
+  }
+  (fa[5] || []).forEach((v, i) => {                        // víboras (la foto siguiente da la dirección)
+    const w = (fb[5] || [])[i] || v, ddx = w[0] - v[0], ddy = w[1] - v[1];
+    if (Math.hypot(ddx, ddy) > .001) { v._dx = ddx; v._dy = ddy; }
+    dibujarVibora(g, S, v[0] + (w[0] - v[0]) * u, v[1] + (w[1] - v[1]) * u, v[2], v._dx || 1, v._dy || 0, ms);
+  });
+  jugador("red", pr, ms); jugador("pink", pp, ms);
+  // reloj y vidas
+  const seg = fa[0] / FPSV;
+  g.fillStyle = "#0a2a0a"; g.fillRect(10, 8, 200, 8); g.fillStyle = seg > TMAX * .7 ? "#ff4d6d" : "#33ff33"; g.fillRect(10, 8, 200 * Math.min(1, seg / TMAX), 8);
+  g.font = "13px Consolas"; g.fillStyle = "#33ff33"; g.fillText(seg.toFixed(1) + " s", 218, 16);
+  g.fillStyle = "#7db0ff"; g.fillText("▲ " + "♥".repeat(Math.max(0, fa[1][2])), 10, 34);
+  g.fillStyle = "#ff69b4"; g.fillText("■ " + "♥".repeat(Math.max(0, fa[2][2])), 10, 50);
+  if (pos >= it.frames.length - 1) {                       // final del intento
+    const t = it.ganador === "red" ? "▲ GANA RED" : it.ganador === "pink" ? "■ GANA PINK" : "☠ MUEREN LOS DOS";
+    g.font = "bold 30px Consolas"; g.textAlign = "center"; g.fillStyle = "rgba(0,0,0,.6)"; g.fillRect(0, arena.height / 2 - 34, arena.width, 52);
+    g.fillStyle = it.ganador === "red" ? "#7db0ff" : it.ganador === "pink" ? "#ff69b4" : "#ffb347"; g.fillText(t, arena.width / 2, arena.height / 2 + 4); g.textAlign = "left";
+  }
+}
+
+function bucle(now) {
+  const dt = Math.min(0.1, (now - ultimo) / 1000); ultimo = now;
+  const it = lista[idx];
+  if (it && M) {
+    const fin = it.frames.length - 1;
+    if (jugando) {
+      if (pos < fin) pos = Math.min(fin, pos + dt * FPD * parseFloat($("vel").value));
+      else {
+        espera += dt;
+        const modo = $("modo").value;
+        if (espera > 1.2 && modo === "orden") siguiente();
+        else if (espera > 1.2 && modo === "ultimo" && idx < lista.length - 1) irA(lista.length - 1);
+      }
+    }
+    dibujar(it, pos, now);
+  }
+  requestAnimationFrame(bucle);
+}
+arena.width = 720; arena.height = 540;
+requestAnimationFrame(bucle);
+</script>
+</body>
+</html>

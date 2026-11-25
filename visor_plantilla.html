@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>RED vs PINK - Visor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --verde:#33ff33; --verde-osc:#0d6b0d; --rojo:#ff4d6d; --azul:#3b82f6; --rosa:#ff69b4; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#000; color:var(--verde); font-family:Consolas,"Courier New",monospace; }
+  /* Líneas de pantalla antigua */
+  body::after { content:""; position:fixed; inset:0; pointer-events:none; z-index:50;
+    background:repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px, rgba(0,0,0,.18) 3px); }
+
+  /* Fondo: comandos de Linux en bucle */
+  #fondo { position:fixed; inset:0; margin:0; padding:8px 10px; z-index:0; overflow:hidden;
+    font-size:13px; line-height:15px; white-space:pre; color:#0c5a0c; opacity:.7; pointer-events:none; }
+
+  #app { position:relative; z-index:1; padding:12px 16px 40px; max-width:1500px; margin:0 auto; }
+  h1 { margin:0 0 4px; font-size:20px; text-shadow:0 0 8px var(--verde); }
+  .sub { opacity:.75; font-size:13px; margin-bottom:10px; }
+  .fila { display:flex; flex-wrap:wrap; gap:14px; align-items:flex-start; }
+  canvas { max-width:100%; height:auto; background:rgba(0,12,0,.92); border:2px solid var(--verde);
+    box-shadow:0 0 14px rgba(51,255,51,.35); }
+
+  .controles { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:10px 0; }
+  button, select { background:#031a03; color:var(--verde); border:1px solid var(--verde);
+    padding:6px 12px; font-family:inherit; font-size:14px; cursor:pointer; }
+  button:hover { background:#0a3a0a; }
+  input[type=range] { accent-color:var(--verde); width:260px; }
+
+  /* Tarjetas de jugador */
+  .lateral { width:300px; display:flex; flex-direction:column; gap:10px; }
+  .tarjeta { background:rgba(0,12,0,.92); border:1px solid var(--verde); padding:10px 12px; font-size:14px; line-height:1.55; }
+  .tarjeta h3 { margin:0 0 4px; font-size:16px; }
+  .tarjeta.red h3 { color:#7db0ff; } .tarjeta.pink h3 { color:var(--rosa); }
+  .barra { height:9px; background:#0a2a0a; border:1px solid #1d6b1d; margin:2px 0 4px; }
+  .barra > i { display:block; height:100%; width:0; }
+  #eventos { margin:0; font-size:12px; opacity:.85; min-height:112px; white-space:pre-wrap; }
+  .vidas { letter-spacing:3px; font-size:18px; }
+
+  /* Pantallas de carga y de final */
+  #carga, #fin { position:fixed; inset:0; z-index:40; background:#000; display:none;
+    flex-direction:column; justify-content:center; align-items:center; gap:14px; text-align:left; }
+  #carga pre { margin:0; font-size:14px; min-width:420px; min-height:150px; line-height:1.5; }
+  #carga .marco { width:420px; height:18px; border:1px solid var(--verde); }
+  #carga .marco i { display:block; height:100%; width:0; background:var(--verde); box-shadow:0 0 10px var(--verde); }
+  #carga h2 { margin:0; font-size:26px; letter-spacing:4px; text-shadow:0 0 10px var(--verde); }
+  #fin { background:rgba(0,0,0,.82); text-align:center; z-index:30; }
+  #fin h2 { font-size:34px; margin:0; text-shadow:0 0 14px var(--verde); }
+  #fin.red h2 { color:#7db0ff; text-shadow:0 0 14px var(--azul); }
+  #fin.pink h2 { color:var(--rosa); text-shadow:0 0 14px var(--rosa); }
+  .leyenda { font-size:12px; opacity:.8; margin-top:6px; }
+  .cursor::after { content:"█"; animation:parpadeo 1s steps(1) infinite; }
+  @keyframes parpadeo { 50% { opacity:0; } }
+</style>
+</head>
+<body>
+
+<pre id="fondo"></pre>
+
+<div id="carga">
+  <h2>RED vs PINK</h2>
+  <pre id="carga-texto"></pre>
+  <div class="marco"><i id="carga-barra"></i></div>
+  <div id="carga-pct">0%</div>
+</div>
+
+<div id="fin"><h2 id="fin-texto"></h2><button id="btn-repetir">▶ Repetir partida</button></div>
+
+<div id="app">
+  <h1>&gt; RED vs PINK <span class="cursor"></span></h1>
+  <div class="sub" id="sub"></div>
+  <div class="sub" style="border:1px solid var(--verde);padding:6px 10px;margin:6px 0">
+    ⚙ Esta es UNA partida grabada. Elegir rondas, repeticiones, Puntos y el Mapa están en el
+    <a href="http://localhost:8765/" style="color:var(--verde);font-weight:bold">CENTRO DE CONTROL</a>
+    <small>(si no abre: doble clic en ABRIR_RED_VS_PINK.bat)</small>
+  </div>
+
+  <div class="fila">
+    <canvas id="arena"></canvas>
+    <div class="lateral">
+      <div class="tarjeta red"><h3>▲ RED</h3><div id="hud-red"></div></div>
+      <div class="tarjeta pink"><h3>■ PINK</h3><div id="hud-pink"></div></div>
+      <div class="tarjeta">
+        <div>⏱ <span id="reloj">0.0</span> / <span id="max"></span> s</div>
+        <div class="barra"><i id="barra-tiempo" style="background:var(--verde)"></i></div>
+        <pre id="eventos"></pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="controles">
+    <button id="btn-play">⏸ Pausa</button>
+    <button id="btn-reiniciar">⏮ Reiniciar</button>
+    <select id="velocidad">
+      <option value="0.25">0.25x</option><option value="0.5">0.5x</option>
+      <option value="1" selected>1x</option><option value="2">2x</option>
+    </select>
+    <input type="range" id="barra-scrub" min="0" value="0">
+    <span class="leyenda">espacio = pausa</span>
+  </div>
+
+  <div class="fila">
+    <canvas id="panel-red" width="620" height="640"></canvas>
+    <canvas id="panel-pink" width="620" height="640"></canvas>
+  </div>
+  <div class="leyenda">
+    Verde = la neurona empuja a favor, rojo = en contra. Cuanto más brillante, más fuerte.
+    A la derecha, las acciones: la más probable se ilumina y la IA la elige según esos porcentajes.
+  </div>
+</div>
+
+<script>
+const D = __DATOS__;
+const M = D.mapa, C = D.config, F = D.frames, DEC = D.decisiones;
+const $ = id => document.getElementById(id);
+
+// ======================================================================
+// 1) FONDO: comandos de Linux en bucle
+// ======================================================================
+const CMDS = [
+ "$ sudo apt update && sudo apt upgrade -y", "Hit:1 http://archive.ubuntu.com/ubuntu jammy InRelease",
+ "Reading package lists... Done", "$ ls -la /home/arena", "drwxr-xr-x  5 red  pink  4096 nov 24 10:03 .",
+ "-rw-r--r--  1 red  pink  1832 nov 24 10:03 mapa.json", "-rwxr-xr-x  1 red  pink  7421 nov 24 10:04 juego.py",
+ "$ ping -c 3 pink.local", "64 bytes from pink.local: icmp_seq=1 ttl=64 time=0.042 ms",
+ "64 bytes from pink.local: icmp_seq=2 ttl=64 time=0.039 ms", "$ top -bn1 | head -5",
+ "Tasks: 214 total,   1 running, 213 sleeping", "%Cpu(s):  6.2 us,  1.1 sy,  0.0 ni, 92.4 id",
+ "$ tail -f /var/log/syslog", "kernel: [ 4821.113] neurona[0x1f] activada", "$ grep -r \"pistola\" ./cerebro",
+ "./cerebro/capa1.bin: coincidencia binaria", "$ chmod +x ./cargar_arena.sh", "$ ./cargar_arena.sh --modo=combate",
+ "[ OK ] arena montada", "$ cat /proc/cpuinfo | grep MHz", "cpu MHz : 3792.000", "$ ssh red@arena",
+ "Welcome to Ubuntu 22.04.3 LTS", "$ docker ps", "CONTAINER ID   IMAGE        STATUS",
+ "a1b2c3d4e5f6   redvspink    Up 3 minutes", "$ git log --oneline -3", "9f3a2c1 pistola se calienta",
+ "4be7d02 veneno añadido", "c0ffee1 escalera", "$ df -h /", "/dev/sda1  234G  91G  131G  41% /",
+ "$ nmap -sn 192.168.0.0/24", "Nmap scan report for pink (192.168.0.23)", "$ uname -a",
+ "Linux arena 6.5.0-generic x86_64 GNU/Linux", "$ watch -n1 'cat /proc/loadavg'", "0.12 0.09 0.05 1/214 18231",
+ "$ kill -9 $(pgrep rival)", "$ echo \"gana el mejor\" >> resultado.txt", "$ journalctl -u arena --since today",
+];
+(function fondo() {
+  const el = $("fondo"); const lineas = []; let k = 0;
+  setInterval(() => {
+    lineas.push(CMDS[k++ % CMDS.length]);
+    const max = Math.ceil(innerHeight / 15) + 1;
+    while (lineas.length > max) lineas.shift();
+    el.textContent = lineas.join("\n");
+  }, 130);
+})();
+
+// ======================================================================
+// 2) PANTALLA DE CARGA
+// ======================================================================
+const MSGS = [
+  "[ OK ] Iniciando sistema de arena...", "[ OK ] Leyendo mapa.json ............ " + M.paredes.length + " paredes",
+  "[ OK ] Cargando cerebro de RED ...... " + (D.modelos.red.entrenada ? "entrenado" : "SIN ENTRENAR"),
+  "[ OK ] Cargando cerebro de PINK ..... " + (D.modelos.pink.entrenada ? "entrenado" : "SIN ENTRENAR"),
+  "[ OK ] Calibrando pistola ............ 0% calor", "[ OK ] Preparando veneno y cajas ...",
+  "[ OK ] Todo listo. Que empiece el combate.",
+];
+function pantallaCarga(ms, alTerminar) {
+  const el = $("carga"); el.style.display = "flex";
+  const t0 = performance.now();
+  const id = setInterval(() => {
+    const p = Math.min(1, (performance.now() - t0) / ms);
+    $("carga-barra").style.width = (p * 100) + "%";
+    $("carga-pct").textContent = Math.round(p * 100) + "%";
+    $("carga-texto").textContent = MSGS.slice(0, Math.ceil(p * MSGS.length)).join("\n");
+    if (p >= 1) { clearInterval(id); el.style.display = "none"; alTerminar(); }
+  }, 60);
+}
+
+// ======================================================================
+// 3) ARENA
+// ======================================================================
+const S = 18;                                   // píxeles por casilla
+const arena = $("arena"); arena.width = M.ancho * S; arena.height = M.alto * S;
+const g = arena.getContext("2d");
+const colorCalor = c => `rgb(255,${Math.round(224 * (1 - c))},0)`;   // amarillo -> rojo
+
+function dibujarObjeto(tipo, cx, cy, calor, esc) {
+  const s = S * (esc || 1);
+  g.save(); g.translate(cx, cy);
+  if (tipo === "caja") {
+    g.fillStyle = "#b8742a"; g.fillRect(-0.4 * s, -0.4 * s, 0.8 * s, 0.8 * s);
+    g.strokeStyle = "#5a360f"; g.lineWidth = 2; g.strokeRect(-0.4 * s, -0.4 * s, 0.8 * s, 0.8 * s);
+    g.beginPath(); g.moveTo(-0.4 * s, -0.4 * s); g.lineTo(0.4 * s, 0.4 * s);
+    g.moveTo(0.4 * s, -0.4 * s); g.lineTo(-0.4 * s, 0.4 * s); g.stroke();
+  } else if (tipo === "pistola") {
+    g.fillStyle = colorCalor(calor); g.shadowColor = colorCalor(calor); g.shadowBlur = 6 + 10 * calor;
+    g.fillRect(-0.45 * s, -0.25 * s, 0.9 * s, 0.32 * s);
+    g.fillRect(-0.4 * s, -0.1 * s, 0.28 * s, 0.5 * s);
+  } else if (tipo === "veneno") {
+    g.fillStyle = "#a020f0"; g.shadowColor = "#d070ff"; g.shadowBlur = 8;
+    g.beginPath(); g.arc(0, 0.1 * s, 0.34 * s, 0, 7); g.fill();
+    g.fillRect(-0.1 * s, -0.42 * s, 0.2 * s, 0.25 * s);
+  }
+  g.restore();
+}
+
+function dibujarEscalera(e) {
+  const x = e.x * S, y = e.y * S, w = e.w * S, h = e.h * S;
+  g.fillStyle = "#3a2a10"; g.fillRect(x, y, w, h);
+  g.strokeStyle = "#d2aa5a"; g.lineWidth = 2;
+  g.beginPath();
+  if (e.h >= e.w) {
+    g.moveTo(x + 3, y); g.lineTo(x + 3, y + h); g.moveTo(x + w - 3, y); g.lineTo(x + w - 3, y + h);
+    for (let py = y + 5; py < y + h; py += 8) { g.moveTo(x + 3, py); g.lineTo(x + w - 3, py); }
+  } else {
+    g.moveTo(x, y + 3); g.lineTo(x + w, y + 3); g.moveTo(x, y + h - 3); g.lineTo(x + w, y + h - 3);
+    for (let px = x + 5; px < x + w; px += 8) { g.moveTo(px, y + 3); g.lineTo(px, y + h - 3); }
+  }
+  g.stroke();
+}
+
+function dibujarJugador(nombre, p, tiempoMs) {
+  g.save(); g.translate(p.x * S, p.y * S);
+  const vivo = p.vidas > 0; g.globalAlpha = vivo ? 1 : 0.28;
+  if (p.veneno > 0 && vivo) {                    // aro verde si está envenenado
+    g.strokeStyle = "#7dff3a"; g.lineWidth = 2; g.shadowColor = "#7dff3a"; g.shadowBlur = 12;
+    g.beginPath(); g.arc(0, 0, S * (0.75 + 0.1 * Math.sin(tiempoMs / 90)), 0, 7); g.stroke();
+    g.shadowBlur = 0;
+  }
+  g.rotate(Math.atan2(p.dir[1], p.dir[0]));
+  g.shadowColor = nombre === "red" ? "#3b82f6" : "#ff69b4"; g.shadowBlur = 10;
+  if (nombre === "red") {                        // triángulo azul
+    g.fillStyle = "#3b82f6"; g.strokeStyle = "#b5d0ff"; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(0.55 * S, 0); g.lineTo(-0.42 * S, 0.45 * S); g.lineTo(-0.42 * S, -0.45 * S);
+    g.closePath(); g.fill(); g.stroke();
+  } else {                                       // cuadrado rosa
+    g.fillStyle = "#ff69b4"; g.strokeStyle = "#ffd0e8"; g.lineWidth = 2;
+    g.fillRect(-0.4 * S, -0.4 * S, 0.8 * S, 0.8 * S); g.strokeRect(-0.4 * S, -0.4 * S, 0.8 * S, 0.8 * S);
+    g.beginPath(); g.moveTo(0.4 * S, 0); g.lineTo(0.62 * S, 0); g.stroke();
+  }
+  g.restore();
+  if (p.objeto) dibujarObjeto(p.objeto, p.x * S, p.y * S - 0.95 * S, p.calor, 0.7);
+}
+
+// La víbora: una serpiente verde que ondula, con su barra de vida (20 perdigones)
+function dibujarVibora(g, S, x, y, vida, dx, dy, ms) {
+  g.save(); g.translate(x * S, y * S); g.rotate(Math.atan2(dy, dx));
+  g.shadowColor = "#9cff3a"; g.shadowBlur = 8; g.strokeStyle = "#5fb814"; g.lineWidth = S * .36; g.lineCap = "round"; g.lineJoin = "round";
+  g.beginPath();
+  for (let i = 0; i <= 8; i++) { const u = -i * S * .14, w = Math.sin(ms / 110 - i * .9) * S * .13; i ? g.lineTo(u, w) : g.moveTo(u, w); }
+  g.stroke();
+  g.fillStyle = "#b6ff4a"; g.beginPath(); g.ellipse(S * .14, 0, S * .3, S * .22, 0, 0, 7); g.fill();
+  g.shadowBlur = 0; g.fillStyle = "#ff2040"; g.beginPath(); g.arc(S * .22, -S * .1, S * .05, 0, 7); g.arc(S * .22, S * .1, S * .05, 0, 7); g.fill();
+  g.restore();
+  g.fillStyle = "#3a0a14"; g.fillRect(x * S - S * .5, y * S - S * .8, S, 3);
+  g.fillStyle = "#ff4d6d"; g.fillRect(x * S - S * .5, y * S - S * .8, S * Math.max(0, vida) / 20, 3);
+}
+function dibujarArena(f, ms) {
+  g.clearRect(0, 0, arena.width, arena.height);
+  g.fillStyle = "#021002"; g.fillRect(0, 0, arena.width, arena.height);
+  g.strokeStyle = "#0a2e0a"; g.lineWidth = 1; g.beginPath();           // cuadrícula
+  for (let x = 0; x <= M.ancho; x++) { g.moveTo(x * S + .5, 0); g.lineTo(x * S + .5, M.alto * S); }
+  for (let y = 0; y <= M.alto; y++) { g.moveTo(0, y * S + .5); g.lineTo(M.ancho * S, y * S + .5); }
+  g.stroke();
+  for (const e of M.escaleras) dibujarEscalera(e);
+  // Paredes: verde terminal con brillo
+  g.save(); g.shadowColor = "#33ff33"; g.shadowBlur = 8;
+  for (const p of M.paredes) {
+    g.fillStyle = "#0d6b0d"; g.fillRect(p.x * S, p.y * S, p.w * S, p.h * S);
+    g.strokeStyle = "#33ff33"; g.lineWidth = 2; g.strokeRect(p.x * S + 1, p.y * S + 1, p.w * S - 2, p.h * S - 2);
+  }
+  g.restore();
+  for (const o of f.objetos) if (!o[4]) dibujarObjeto(o[0], o[1] * S, o[2] * S, o[3]);   // objetos en el suelo
+  for (const p of f.proyectiles) {
+    g.save(); g.shadowBlur = 10;
+    if (p[0] === "bala") { g.fillStyle = "#fff6a0"; g.shadowColor = "#ffe000"; g.fillRect(p[1] * S - 3, p[2] * S - 3, 6, 6); }
+    else { g.fillStyle = "#c050ff"; g.shadowColor = "#c050ff"; g.beginPath(); g.arc(p[1] * S, p[2] * S, 5, 0, 7); g.fill(); }
+    g.restore();
+  }
+  (f.viboras || []).forEach(v => dibujarVibora(g, S, v[0], v[1], v[2], v[3][0], v[3][1], ms));
+  dibujarJugador("red", f.red, ms);
+  dibujarJugador("pink", f.pink, ms);
+}
+
+// ======================================================================
+// 4) PANEL DE NEURONAS
+// ======================================================================
+function panel(nombre, cv, d) {
+  const x = cv.getContext("2d"), W = cv.width, H = cv.height, mod = D.modelos[nombre];
+  x.clearRect(0, 0, W, H); x.fillStyle = "rgba(0,12,0,.95)"; x.fillRect(0, 0, W, H);
+  const top = 46, bot = 10;
+  const yDe = n => i => top + (i + 0.5) * (H - top - bot) / n;
+  const yI = yDe(d.obs.length), y1 = yDe(d.h1.length), y2 = yDe(d.h2.length), yO = yDe(d.p.length);
+  const xI = 185, x1 = 295, x2 = 395, xO = 490;
+
+  // Título
+  x.font = "bold 15px Consolas"; x.textAlign = "left";
+  x.fillStyle = nombre === "red" ? "#7db0ff" : "#ff69b4";
+  x.fillText("CEREBRO DE " + nombre.toUpperCase(), 12, 20);
+  x.font = "11px Consolas"; x.fillStyle = mod.entrenada ? "#33ff33" : "#ffb347";
+  x.fillText(mod.entrenada ? "IA entrenada" : "SIN ENTRENAR: pesos al azar", 12, 36);
+  x.fillStyle = "#1f8f1f"; x.textAlign = "center";
+  [[xI, "VE"], [x1, "CAPA 1"], [x2, "CAPA 2"], [xO + 40, "DECIDE"]].forEach(([px, t]) => x.fillText(t, px, 36));
+
+  // Conexiones: solo las que más pesan (valor de la neurona x peso)
+  function conexiones(Wm, src, ySrc, xSrc, nDst, yDst, xDst) {
+    let max = 0;
+    for (let j = 0; j < nDst; j++) for (let i = 0; i < src.length; i++) max = Math.max(max, Math.abs(Wm[j][i] * src[i]));
+    if (max < 1e-6) return;
+    for (let j = 0; j < nDst; j++) for (let i = 0; i < src.length; i++) {
+      const c = Wm[j][i] * src[i], r = Math.abs(c) / max;
+      if (r < 0.33) continue;
+      x.strokeStyle = c > 0 ? `rgba(51,255,51,${r * 0.55})` : `rgba(255,77,109,${r * 0.55})`;
+      x.lineWidth = 0.5 + r;
+      x.beginPath(); x.moveTo(xSrc + 4, ySrc(i)); x.lineTo(xDst - 4, yDst(j)); x.stroke();
+    }
+  }
+  conexiones(mod.w1, d.obs, yI, xI, d.h1.length, y1, x1);
+  conexiones(mod.w2, d.h1, y1, x1, d.h2.length, y2, x2);
+  conexiones(mod.w3, d.h2, y2, x2, d.p.length, yO, xO);
+
+  // Neuronas
+  function nodos(vals, yF, xp, r) {
+    vals.forEach((v, i) => {
+      const a = Math.min(1, Math.abs(v));
+      x.beginPath(); x.arc(xp, yF(i), r, 0, 7);
+      x.fillStyle = v >= 0 ? `rgba(51,255,51,${0.12 + 0.88 * a})` : `rgba(255,77,109,${0.12 + 0.88 * a})`;
+      x.fill(); x.strokeStyle = "#145214"; x.lineWidth = 0.6; x.stroke();
+    });
+  }
+  nodos(d.obs, yI, xI, 3); nodos(d.h1, y1, x1, 3); nodos(d.h2, y2, x2, 3);
+
+  // Etiquetas de lo que ve
+  x.font = "8.5px Consolas"; x.textAlign = "right";
+  d.obs.forEach((v, i) => {
+    x.fillStyle = Math.abs(v) > 0.05 ? "#9dffa0" : "#2a7a2a";
+    x.fillText(C.nombres_obs[i], xI - 9, yI(i) + 3);
+  });
+
+  // Salidas = acciones
+  d.p.forEach((p, k) => {
+    const elegido = k === d.a, y = yO(k);
+    x.beginPath(); x.arc(xO, y, 5 + p * 9, 0, 7);
+    x.fillStyle = `rgba(51,255,51,${0.15 + 0.85 * p})`; x.fill();
+    x.strokeStyle = elegido ? "#ffffff" : "#145214"; x.lineWidth = elegido ? 2.5 : 0.8; x.stroke();
+    x.textAlign = "left"; x.font = (elegido ? "bold " : "") + "12px Consolas";
+    x.fillStyle = elegido ? "#ffffff" : "#5fd35f";
+    x.fillText(C.acciones[k] + " " + Math.round(p * 100) + "%", xO + 20, y + 4);
+  });
+}
+
+// ======================================================================
+// 5) HUD Y REPRODUCCIÓN
+// ======================================================================
+const NOMBRE_ACC = C.acciones;
+function hud(nombre, p, d) {
+  const corazones = "♥".repeat(Math.max(0, p.vidas)) + "♡".repeat(Math.max(0, 2 - p.vidas));
+  const calor = p.objeto === "pistola"
+    ? `<div>calor de la pistola</div><div class="barra"><i style="width:${p.calor * 100}%;background:${colorCalor(p.calor)}"></i></div>` : "";
+  $("hud-" + nombre).innerHTML =
+    `<div class="vidas">${corazones}</div>` +
+    `<div>mano: ${p.objeto || "vacía"}</div>` + calor +
+    (p.veneno > 0 ? `<div style="color:#7dff3a">☠ envenenado (${(p.veneno / C.fps).toFixed(1)} s)</div>` : "") +
+    `<div>piensa: <b>${NOMBRE_ACC[d.a]}</b></div>`;
+}
+
+let i = 0, jugando = true, acum = 0, ultimo = performance.now(), dUltimo = -2, terminado = false;
+$("max").textContent = C.tiempo_max;
+$("sub").textContent = "Partida grabada de las dos IAs" +
+  (D.ronda === null ? " (versión más reciente)" : " (ronda de entrenamiento " + D.ronda + ")") +
+  ". Debajo de la arena ves sus cerebros pensando."; $("barra-scrub").max = F.length - 1;
+const TEXTO_EV = {
+  disparo: "dispara", sobrecalentada: "¡escopeta al rojo, la suelta!", coge_pistola: "coge la escopeta",
+  coge_caja: "coge la caja", coge_veneno: "coge el veneno", suelta_caja: "suelta la caja",
+  suelta_pistola: "suelta la escopeta", suelta_veneno: "suelta el veneno", lanza_veneno: "lanza el veneno",
+  envenenado: "queda envenenado", golpe_bala: "recibe un balazo (-1 vida)",
+  golpe_veneno: "el veneno le quita 1 vida", se_acabo_el_tiempo: "SE ACABÓ EL TIEMPO",
+};
+function eventos() {
+  const l = [];
+  for (let k = Math.max(0, i - 150); k <= i; k++)
+    for (const [e, q] of F[k].ev) if (TEXTO_EV[e] && e !== "disparo") l.push(((F[k].t / C.fps).toFixed(1)) + "s " + (q || "") + " " + TEXTO_EV[e]);
+  $("eventos").textContent = l.slice(-7).join("\n");
+}
+
+function render(ms) {
+  const f = F[i];
+  dibujarArena(f, ms);
+  const dec = DEC[f.d];
+  if (f.d !== dUltimo) {                         // el cerebro solo cambia cuando la IA decide
+    panel("red", $("panel-red"), dec.red); panel("pink", $("panel-pink"), dec.pink); dUltimo = f.d;
+    hud("red", f.red, dec.red); hud("pink", f.pink, dec.pink);
+  } else { hud("red", f.red, dec.red); hud("pink", f.pink, dec.pink); }
+  const seg = f.t / C.fps;
+  $("reloj").textContent = seg.toFixed(1);
+  $("barra-tiempo").style.width = Math.min(100, seg / C.tiempo_max * 100) + "%";
+  $("barra-tiempo").style.background = seg > C.tiempo_max * 0.7 ? "var(--rojo)" : "var(--verde)";
+  $("barra-scrub").value = i; eventos();
+}
+
+function mostrarFin() {
+  const r = D.resultado, el = $("fin");
+  el.className = r === "red" ? "red" : r === "pink" ? "pink" : "";
+  $("fin-texto").textContent = r === "red" ? "▲ GANA RED" : r === "pink" ? "■ GANA PINK" : "☠ MUEREN LOS DOS";
+  el.style.display = "flex"; terminado = true;
+}
+function bucle(now) {
+  const dt = (now - ultimo) / 1000; ultimo = now;
+  if (jugando && !terminado) {
+    acum += dt * parseFloat($("velocidad").value) * C.fps;
+    while (acum >= 1) { acum -= 1; if (i < F.length - 1) i++; else { jugando = false; setTimeout(mostrarFin, 600); break; } }
+  }
+  render(now); requestAnimationFrame(bucle);
+}
+
+function reiniciar() { $("fin").style.display = "none"; terminado = false; i = 0; acum = 0; dUltimo = -2; jugando = true; $("btn-play").textContent = "⏸ Pausa"; }
+$("btn-play").onclick = () => { jugando = !jugando; $("btn-play").textContent = jugando ? "⏸ Pausa" : "▶ Seguir"; };
+$("btn-reiniciar").onclick = reiniciar;
+$("btn-repetir").onclick = () => { $("fin").style.display = "none"; pantallaCarga(1500, reiniciar); };
+$("barra-scrub").oninput = e => { i = +e.target.value; jugando = false; $("btn-play").textContent = "▶ Seguir"; terminado = false; $("fin").style.display = "none"; };
+addEventListener("keydown", e => { if (e.code === "Space") { e.preventDefault(); $("btn-play").click(); } });
+
+jugando = false;
+pantallaCarga(3200, () => { jugando = true; });
+requestAnimationFrame(bucle);
+</script>
+</body>
+</html>

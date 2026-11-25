@@ -1,0 +1,24 @@
+# Entorno de Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Registros y temporales
+*.log
+*.tmp
+
+# Archivos de trabajo del entrenamiento (se regeneran solos)
+modelos/lotes/
+modelos/en_uso.json
+
+# Copias de seguridad locales
+respaldo_*/
+
+# Sistema y editores
+.vscode/
+.idea/
+.claude/
+Thumbs.db
+desktop.ini
+.DS_Store

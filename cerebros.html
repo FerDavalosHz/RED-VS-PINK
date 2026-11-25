@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Cerebros - RED vs PINK</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --verde:#33ff33; --rojo:#ff4d6d; --azul:#7db0ff; --rosa:#ff69b4; --ambar:#ffb347; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#000; color:var(--verde); font-family:Consolas,"Courier New",monospace; padding:10px 14px 30px; }
+  h1 { margin:0 0 4px; font-size:18px; text-shadow:0 0 8px var(--verde); }
+  .sub { opacity:.8; font-size:13px; line-height:1.5; margin-bottom:8px; max-width:1100px; }
+  .barra { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:8px 0; }
+  button, select { background:#031a03; color:var(--verde); border:1px solid var(--verde); padding:6px 12px; font-family:inherit; font-size:14px; cursor:pointer; }
+  button:hover { background:#0a3a0a; } button:disabled { opacity:.5; cursor:wait; }
+  #nueva { font-weight:bold; background:#0b4a0b; }
+  input[type=range] { accent-color:var(--verde); width:220px; }
+  .fila { display:flex; flex-wrap:wrap; gap:14px; align-items:flex-start; }
+  canvas { background:rgba(0,12,0,.92); border:2px solid var(--verde); max-width:100%; height:auto; }
+  .cerebro { width:724px; max-width:100%; }
+  .cerebro canvas { display:block; width:100%; }
+  .texto { border:1px solid #14601a; border-top:none; background:rgba(0,14,0,.92); padding:8px 12px; font-size:14px; line-height:1.6; min-height:118px; }
+  .texto .dec { font-size:16px; margin-bottom:4px; }
+  .mas { color:#7dff7d; } .menos { color:var(--rojo); }
+  .num { display:inline-block; min-width:20px; text-align:center; border:1px solid currentColor; border-radius:50%; margin-right:6px; font-size:12px; }
+  .red .dec b { color:var(--azul); } .pink .dec b { color:var(--rosa); }
+  .leyenda { font-size:12px; opacity:.8; max-width:1100px; line-height:1.5; margin-top:8px; }
+</style>
+</head>
+<body>
+<h1>&gt; CEREBROS: ¿POR QUÉ HACE LO QUE HACE?</h1>
+<div class="sub">Cada IA mira lo que tiene a su alrededor (izquierda), lo pasa por dos capas de neuronas (centro) y elige una acción (derecha).
+  Los <b>círculos numerados</b> son las cosas que más empujaron la decisión de ese instante; las <b>líneas</b> son el camino que siguió esa influencia
+  hasta la acción elegida. Abajo, la misma explicación en palabras.</div>
+
+<div class="barra">
+  <label>IAs de la <select id="ronda"></select></label>
+  <button id="nueva">▶ Nueva partida de demostración</button>
+  <span id="msg"></span>
+</div>
+<div class="barra">
+  <button id="pausa">⏸ Pausa</button>
+  <select id="vel"><option value="0.25">0.25x</option><option value="0.5" selected>0.5x</option><option value="1">1x</option></select>
+  <label><input type="checkbox" id="ver-vision" checked> 👁 ver lo que ven (rango de visión)</label>
+  <input type="range" id="scrub" min="0" max="0" value="0">
+  <span id="reloj"></span>
+</div>
+
+<div class="fila">
+  <canvas id="arena"></canvas>
+  <div class="cerebro red"><canvas id="c-red" width="720" height="412"></canvas><div class="texto" id="t-red"></div></div>
+  <div class="cerebro pink"><canvas id="c-pink" width="720" height="412"></canvas><div class="texto" id="t-pink"></div></div>
+</div>
+<div class="leyenda"><span class="mas">Verde</span> = esa entrada o neurona empuja <b>a favor</b> de la acción elegida · <span class="menos">rojo</span> = empuja <b>en contra</b> ·
+  más brillante = más fuerte. Los muros son la cuadrícula de 5×5 casillas alrededor de la criatura (la del centro es ella).
+  Pasa el ratón por encima de una entrada para ver su nombre.</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const CAB = { "Content-Type": "application/json", "X-RVP": "1" };
+let D = null, F = [], DEC = [], k = 0, jugando = true, acum = 0, ultimo = performance.now(), dUlt = -2;
+
+// =====================================================================
+// Lo que ve la IA, agrupado por significado
+// =====================================================================
+const GRUPOS = [
+  { t: "YO", y: 52, idx: [0, 1, 6, 8, 9, 10, 11, 12, 13, 14, 15, 19, 31] },
+  { t: "EL RIVAL", y: 120, idx: [2, 3, 4, 5, 7, 16, 17, 18, 20] },
+  { t: "OBJETOS EN EL SUELO", y: 188, idx: [21, 22, 23, 24, 25, 26, 27, 28, 29, 30] },
+];
+const POS_IN = {};                                  // posición de cada entrada en el dibujo
+GRUPOS.forEach(g => g.idx.forEach((n, j) => { POS_IN[n] = { x: 20 + (j % 7) * 24, y: g.y + 14 + Math.floor(j / 7) * 24 }; }));
+for (let n = 32; n < 57; n++) { const c = (n - 32) % 5, r = Math.floor((n - 32) / 5); POS_IN[n] = { x: 20 + c * 24, y: 280 + r * 24, muro: true }; }
+const OX1 = 255, OX2 = 372, OY = 118, PASO = 13;     // las dos capas de 8x8 neuronas
+const posH = (ox, n) => ({ x: ox + (n % 8) * PASO, y: OY + Math.floor(n / 8) * PASO });
+const posOut = k => ({ x: 548, y: 78 + k * 46 });
+
+// Frases en lenguaje normal para cada entrada
+function frase(i, v) {
+  const n = D.config.nombres_obs[i], mas = v > 0;
+  const lado = (neg, pos) => mas ? pos : neg;
+  const F_ = {
+    "mi x": "dónde está (izquierda-derecha)", "mi y": "dónde está (arriba-abajo)",
+    "rival x": "dónde está el rival (izq-der)", "rival y": "dónde está el rival (arriba-abajo)",
+    "rival dx": lado("el rival está a su izquierda", "el rival está a su derecha"),
+    "rival dy": lado("el rival está más arriba", "el rival está más abajo"),
+    "mis vidas": v >= 1 ? "tiene sus 2 vidas" : "solo le queda 1 vida",
+    "vidas rival": v >= 1 ? "el rival tiene 2 vidas" : "al rival le queda 1 vida",
+    "miro x": lado("mira a la izquierda", "mira a la derecha"), "miro y": lado("mira hacia arriba", "mira hacia abajo"),
+    "tiempo que queda": v > 0.5 ? "queda mucho tiempo" : "queda poco tiempo",
+    "mano vacia": "tiene la mano vacía", "llevo caja": "lleva una caja", "llevo pistola": "lleva la escopeta", "llevo veneno": "lleva el veneno",
+    "mi calor": "su escopeta está caliente",
+    "rival pistola": "el rival lleva la escopeta", "rival veneno": "el rival lleva el veneno", "rival caja": "el rival lleva una caja",
+    "estoy envenenado": "está envenenado", "rival envenenado": "el rival está envenenado",
+    "caja dx": lado("hay una caja a la izquierda", "hay una caja a la derecha"), "caja dy": lado("hay una caja más arriba", "hay una caja más abajo"), "hay caja": "hay una caja suelta",
+    "pistola dx": lado("la escopeta está a la izquierda", "la escopeta está a la derecha"), "pistola dy": lado("la escopeta está más arriba", "la escopeta está más abajo"),
+    "hay pistola": "hay una escopeta en el suelo", "pistola calor": "la escopeta del suelo está caliente",
+    "veneno dx": lado("el veneno está a la izquierda", "el veneno está a la derecha"), "veneno dy": lado("el veneno está más arriba", "el veneno está más abajo"),
+    "hay veneno": "hay un veneno en el suelo", "recarga": "está recargando la escopeta",
+  };
+  if (F_[n]) return F_[n];
+  const m = /muro \(([+-]\d),([+-]\d)\)/.exec(n);      // muro (+1,0) = una casilla a la derecha
+  if (m) {
+    const ox = +m[1], oy = +m[2], partes = [];
+    if (oy) partes.push(oy < 0 ? "arriba" : "abajo"); if (ox) partes.push(ox < 0 ? "a la izquierda" : "a la derecha");
+    return "hay un muro " + (partes.join(" y ") || "justo ahí") + " (" + Math.max(Math.abs(ox), Math.abs(oy)) + " casilla" + (Math.max(Math.abs(ox), Math.abs(oy)) > 1 ? "s" : "") + ")";
+  }
+  return n;
+}
+
+// =====================================================================
+// Qué pesa en la decisión: se "retrocede" desde la acción elegida hasta las entradas
+// =====================================================================
+function analizar(mod, d) {
+  const a = d.a, W1 = mod.w1, W2 = mod.w2, W3 = mod.w3, obs = d.obs, h1 = d.h1, h2 = d.h2;
+  const g2 = h2.map((h, j) => W3[a][j] * (1 - h * h));
+  const g1 = h1.map((h, i) => { let s = 0; for (let j = 0; j < g2.length; j++) s += W2[j][i] * g2[j]; return s * (1 - h * h); });
+  const aporteIn = obs.map((v, n) => { let s = 0; for (let i = 0; i < g1.length; i++) s += W1[i][n] * g1[i]; return s * v; });
+  return { aporteIn, aporte1: h1.map((h, i) => g1[i] * h), aporte2: h2.map((h, j) => W3[a][j] * h) };
+}
+const mejores = (arr, n, minimo) => arr.map((v, i) => [Math.abs(v), i]).sort((x, y) => y[0] - x[0]).slice(0, n).filter(p => p[0] >= (minimo || 0)).map(p => p[1]);
+const RELLENO = (v, a) => v >= 0 ? `rgba(51,255,51,${a})` : `rgba(255,77,109,${a})`;
+
+// =====================================================================
+// Dibujo del cerebro
+// =====================================================================
+function cerebro(nombre, cv, d) {
+  const x = cv.getContext("2d"), W = cv.width, H = cv.height, mod = D.modelos[nombre];
+  x.clearRect(0, 0, W, H); x.fillStyle = "rgba(0,12,0,.95)"; x.fillRect(0, 0, W, H);
+  const an = analizar(mod, d), a = d.a;
+  const selIn = mejores(an.aporteIn, 6, 0.02), sel1 = mejores(an.aporte1, 6), sel2 = mejores(an.aporte2, 5);
+
+  // Títulos
+  x.font = "bold 15px Consolas"; x.textAlign = "left"; x.fillStyle = nombre === "red" ? "#7db0ff" : "#ff69b4";
+  x.fillText((nombre === "red" ? "▲ RED" : "■ PINK"), 12, 20);
+  x.font = "11px Consolas"; x.fillStyle = mod.entrenada ? "#33ff33" : "#ffb347";
+  x.fillText(mod.entrenada ? "IA entrenada" : "SIN ENTRENAR (pesos al azar)", 80, 20);
+  x.fillStyle = "#2a9a2a"; x.font = "12px Consolas";
+  x.fillText("LO QUE VE", 14, 42); x.textAlign = "center";
+  x.fillText("CAPA 1 (64 neuronas)", OX1 + 52, 100); x.fillText("CAPA 2", OX2 + 52, 100); x.fillText("DECIDE", 548, 42);
+  x.textAlign = "left";
+  GRUPOS.forEach(g => { x.fillStyle = "#1f8f1f"; x.fillText(g.t, 14, g.y + 4); });
+  x.fillStyle = "#1f8f1f"; x.fillText("MUROS ALREDEDOR", 14, 270);
+
+  // Líneas: solo los caminos que más pesan hacia la acción elegida
+  function lineas(origen, destino, sel1_, sel2_, peso, pO, pD) {
+    const ws = []; let max = 1e-9;
+    sel1_.forEach(i => sel2_.forEach(j => { const w = peso(i, j); ws.push([i, j, w]); max = Math.max(max, Math.abs(w)); }));
+    ws.forEach(([i, j, w]) => {
+      const r = Math.abs(w) / max; if (r < 0.3) return;
+      const p = pO(i), q = pD(j);
+      x.strokeStyle = RELLENO(w, 0.25 + 0.6 * r); x.lineWidth = 0.8 + 2.6 * r;
+      x.beginPath(); x.moveTo(p.x + 6, p.y); x.lineTo(q.x - 6, q.y); x.stroke();
+    });
+  }
+  // entradas → capa 1: las entradas están a la izquierda, se dibujan hasta el borde de la capa
+  lineas(0, 0, selIn, sel1, (n, i) => mod.w1[i][n] * d.obs[n], n => POS_IN[n], i => ({ x: posH(OX1, i).x - 0, y: posH(OX1, i).y }));
+  lineas(0, 0, sel1, sel2, (i, j) => mod.w2[j][i] * d.h1[i], i => posH(OX1, i), j => posH(OX2, j));
+  sel2.forEach(j => {                                          // capa 2 → acción elegida
+    const w = mod.w3[a][j] * d.h2[j], p = posH(OX2, j), q = posOut(a);
+    x.strokeStyle = RELLENO(w, 0.55); x.lineWidth = 1 + Math.min(3, Math.abs(w) * 3);
+    x.beginPath(); x.moveTo(p.x + 6, p.y); x.lineTo(q.x - 12, q.y); x.stroke();
+  });
+
+  // Entradas (puntos) y muros (casillas)
+  d.obs.forEach((v, n) => {
+    const p = POS_IN[n], al = Math.min(1, Math.abs(v));
+    if (p.muro) {
+      x.fillStyle = v > 0.5 ? "#1f9f1f" : "#041504"; x.fillRect(p.x - 10, p.y - 10, 20, 20);
+      x.strokeStyle = "#145214"; x.lineWidth = 1; x.strokeRect(p.x - 10, p.y - 10, 20, 20);
+      if (n === 44) { x.fillStyle = nombre === "red" ? "#3b82f6" : "#ff69b4"; x.beginPath(); x.arc(p.x, p.y, 5, 0, 7); x.fill(); }
+    } else {
+      x.beginPath(); x.arc(p.x, p.y, 7, 0, 7);
+      x.fillStyle = Math.abs(v) < 0.02 ? "#041504" : RELLENO(v, 0.2 + 0.8 * al); x.fill();
+      x.strokeStyle = "#145214"; x.lineWidth = 1; x.stroke();
+    }
+  });
+  selIn.forEach((n, r) => {                                    // anillo y número: las 6 que más pesan
+    const p = POS_IN[n], c = an.aporteIn[n] >= 0 ? "#7dff7d" : "#ff4d6d";
+    x.strokeStyle = c; x.lineWidth = 2; x.beginPath(); x.arc(p.x, p.y, p.muro ? 13 : 10, 0, 7); x.stroke();
+    x.fillStyle = c; x.font = "bold 11px Consolas"; x.textAlign = "center"; x.fillText(r + 1, p.x + 12, p.y - 9); x.textAlign = "left";
+  });
+
+  // Neuronas de las dos capas
+  function capa(vals, ox, sel) {
+    vals.forEach((v, n) => {
+      const p = posH(ox, n);
+      x.beginPath(); x.arc(p.x, p.y, 4.6, 0, 7);
+      x.fillStyle = Math.abs(v) < 0.03 ? "#041504" : RELLENO(v, 0.15 + 0.85 * Math.min(1, Math.abs(v))); x.fill();
+      x.strokeStyle = sel.includes(n) ? "#ffffff" : "#124512"; x.lineWidth = sel.includes(n) ? 1.8 : 0.8; x.stroke();
+    });
+  }
+  capa(d.h1, OX1, sel1); capa(d.h2, OX2, sel2);
+
+  // Salidas: las 7 acciones
+  d.p.forEach((p, i) => {
+    const o = posOut(i), elegido = i === a;
+    x.beginPath(); x.arc(o.x, o.y, 6 + p * 12, 0, 7); x.fillStyle = `rgba(51,255,51,${0.12 + 0.88 * p})`; x.fill();
+    x.strokeStyle = elegido ? "#ffffff" : "#145214"; x.lineWidth = elegido ? 3 : 0.8; x.stroke();
+    x.font = (elegido ? "bold " : "") + "13px Consolas"; x.fillStyle = elegido ? "#ffffff" : "#5fd35f";
+    x.fillText(D.config.acciones[i] + " " + Math.round(p * 100) + "%", o.x + 22, o.y + 4);
+  });
+  cv._d = d;
+}
+
+// Explicación en palabras
+function explicar(nombre, d) {
+  const mod = D.modelos[nombre], an = analizar(mod, d), sel = mejores(an.aporteIn, 6, 0.02);
+  const max = Math.max(1e-9, ...sel.map(n => Math.abs(an.aporteIn[n])));
+  const nombreAcc = D.config.acciones[d.a], pct = Math.round(d.p[d.a] * 100);
+  const orden = d.p.map((p, i) => [p, i]).sort((u, v) => v[0] - u[0]);
+  const segunda = orden[1] && orden[1][0] > 0.05 ? ` · segunda opción: ${D.config.acciones[orden[1][1]]} (${Math.round(orden[1][0] * 100)} %)` : "";
+  const filas = sel.map((n, r) => {
+    const v = d.obs[n], mas = an.aporteIn[n] >= 0, barras = "▮".repeat(Math.max(1, Math.round(5 * Math.abs(an.aporteIn[n]) / max)));
+    return `<div class="${mas ? "mas" : "menos"}"><span class="num">${r + 1}</span>${mas ? "a favor" : "en contra"}: ${frase(n, v)} <small>${barras}</small></div>`;
+  }).join("") || "<div>Casi nada de lo que ve influye: está decidiendo casi al azar.</div>";
+  $("t-" + nombre).innerHTML = `<div class="dec">Elige: <b>${nombreAcc}</b> (${pct} %)${segunda}</div>${filas}`;
+}
+
+// Nombre de la entrada al pasar el ratón
+["red", "pink"].forEach(nombre => {
+  const cv = $("c-" + nombre);
+  cv.addEventListener("mousemove", e => {
+    const r = cv.getBoundingClientRect(), mx = (e.clientX - r.left) * cv.width / r.width, my = (e.clientY - r.top) * cv.height / r.height;
+    let mejor = null, md = 12;
+    for (const n in POS_IN) { const p = POS_IN[n], dd = Math.hypot(p.x - mx, p.y - my); if (dd < md) { md = dd; mejor = n; } }
+    cv.title = mejor !== null && cv._d ? `${D.config.nombres_obs[mejor]} = ${cv._d.obs[mejor]}` : "";
+  });
+});
+
+// =====================================================================
+// Arena
+// =====================================================================
+const S = 14, arena = $("arena"), g = arena.getContext("2d");
+const colorCalor = c => `rgb(255,${Math.round(224 * (1 - c))},0)`;
+function obj(tipo, cx, cy, calor, esc) {
+  const s = S * (esc || 1); g.save(); g.translate(cx, cy);
+  if (tipo === "caja") { g.fillStyle = "#b8742a"; g.fillRect(-.4 * s, -.4 * s, .8 * s, .8 * s); g.strokeStyle = "#5a360f"; g.lineWidth = 2; g.strokeRect(-.4 * s, -.4 * s, .8 * s, .8 * s); }
+  else if (tipo === "pistola") { g.fillStyle = colorCalor(calor); g.shadowColor = colorCalor(calor); g.shadowBlur = 6 + 10 * calor; g.fillRect(-.45 * s, -.25 * s, .9 * s, .32 * s); g.fillRect(-.4 * s, -.1 * s, .28 * s, .5 * s); }
+  else if (tipo === "veneno") { g.fillStyle = "#a020f0"; g.shadowColor = "#d070ff"; g.shadowBlur = 8; g.beginPath(); g.arc(0, .1 * s, .34 * s, 0, 7); g.fill(); g.fillRect(-.1 * s, -.42 * s, .2 * s, .25 * s); }
+  g.restore();
+}
+function jug(nombre, p, ms) {
+  g.save(); g.translate(p.x * S, p.y * S); g.globalAlpha = p.vidas > 0 ? 1 : .28;
+  if (p.veneno > 0 && p.vidas > 0) { g.strokeStyle = "#7dff3a"; g.lineWidth = 2; g.beginPath(); g.arc(0, 0, S * (.75 + .1 * Math.sin(ms / 90)), 0, 7); g.stroke(); }
+  g.rotate(Math.atan2(p.dir[1], p.dir[0])); g.lineWidth = 2; g.shadowColor = nombre === "red" ? "#3b82f6" : "#ff69b4"; g.shadowBlur = 10;
+  if (nombre === "red") { g.fillStyle = "#3b82f6"; g.strokeStyle = "#b5d0ff"; g.beginPath(); g.moveTo(.55 * S, 0); g.lineTo(-.42 * S, .45 * S); g.lineTo(-.42 * S, -.45 * S); g.closePath(); g.fill(); g.stroke(); }
+  else { g.fillStyle = "#ff69b4"; g.strokeStyle = "#ffd0e8"; g.fillRect(-.4 * S, -.4 * S, .8 * S, .8 * S); g.strokeRect(-.4 * S, -.4 * S, .8 * S, .8 * S); g.beginPath(); g.moveTo(.4 * S, 0); g.lineTo(.62 * S, 0); g.stroke(); }
+  g.restore();
+  if (p.objeto) obj(p.objeto, p.x * S, p.y * S - .95 * S, p.calor, .7);
+}
+// Rango de visión: la zona que ve cada criatura, trazada con rayos. Los muros y las cajas la tapan.
+function dibujarVision(M, objetos, p, rgb, R, campo) {
+  if (p.vidas <= 0) return;
+  if (!M._muros) { const s = new Set(); M.paredes.forEach(w => { for (let x = w.x; x < w.x + w.w; x++) for (let y = w.y; y < w.y + w.h; y++) s.add(x + "," + y); }); M._muros = s; }
+  const cajas = new Set(objetos.filter(o => o[0] === "caja" && !o[4]).map(o => Math.floor(o[1]) + "," + Math.floor(o[2])));
+  const entero = campo >= 360, mitad = campo * Math.PI / 360, rumbo = Math.atan2(p.dir[1], p.dir[0]);
+  g.beginPath(); if (!entero) g.moveTo(p.x * S, p.y * S);   // cono hacia donde mira
+  for (let k = 0, N = 96; k <= N; k++) {
+    if (entero && k === N) break;
+    const ang = entero ? 2 * Math.PI * k / N : rumbo - mitad + 2 * mitad * k / N, dx = Math.cos(ang), dy = Math.sin(ang); let d = 0;
+    while (d < R) {
+      const cx = Math.floor(p.x + dx * (d + .3)), cy = Math.floor(p.y + dy * (d + .3));
+      if (cx < 0 || cy < 0 || cx >= M.ancho || cy >= M.alto || M._muros.has(cx + "," + cy) || cajas.has(cx + "," + cy)) break;
+      d += .3;
+    }
+    const X = (p.x + dx * d) * S, Y = (p.y + dy * d) * S; (k || !entero) ? g.lineTo(X, Y) : g.moveTo(X, Y);
+  }
+  g.closePath(); g.fillStyle = `rgba(${rgb},.15)`; g.fill(); g.strokeStyle = `rgba(${rgb},.6)`; g.lineWidth = 1.5; g.stroke();
+}
+// La víbora: una serpiente verde que ondula, con su barra de vida (20 perdigones)
+function dibujarVibora(g, S, x, y, vida, dx, dy, ms) {
+  g.save(); g.translate(x * S, y * S); g.rotate(Math.atan2(dy, dx));
+  g.shadowColor = "#9cff3a"; g.shadowBlur = 8; g.strokeStyle = "#5fb814"; g.lineWidth = S * .36; g.lineCap = "round"; g.lineJoin = "round";
+  g.beginPath();
+  for (let i = 0; i <= 8; i++) { const u = -i * S * .14, w = Math.sin(ms / 110 - i * .9) * S * .13; i ? g.lineTo(u, w) : g.moveTo(u, w); }
+  g.stroke();
+  g.fillStyle = "#b6ff4a"; g.beginPath(); g.ellipse(S * .14, 0, S * .3, S * .22, 0, 0, 7); g.fill();
+  g.shadowBlur = 0; g.fillStyle = "#ff2040"; g.beginPath(); g.arc(S * .22, -S * .1, S * .05, 0, 7); g.arc(S * .22, S * .1, S * .05, 0, 7); g.fill();
+  g.restore();
+  g.fillStyle = "#3a0a14"; g.fillRect(x * S - S * .5, y * S - S * .8, S, 3);
+  g.fillStyle = "#ff4d6d"; g.fillRect(x * S - S * .5, y * S - S * .8, S * Math.max(0, vida) / 20, 3);
+}
+function dibujarArena(f, ms) {
+  const M = D.mapa; arena.width = M.ancho * S; arena.height = M.alto * S;
+  g.fillStyle = "#021002"; g.fillRect(0, 0, arena.width, arena.height);
+  g.strokeStyle = "#0a2e0a"; g.lineWidth = 1; g.beginPath();
+  for (let i = 0; i <= M.ancho; i++) { g.moveTo(i * S + .5, 0); g.lineTo(i * S + .5, M.alto * S); }
+  for (let j = 0; j <= M.alto; j++) { g.moveTo(0, j * S + .5); g.lineTo(M.ancho * S, j * S + .5); }
+  g.stroke();
+  if ($("ver-vision").checked) {                         // lo que ve cada una (los muros y cajas la tapan)
+    const R = D.config.rango_vision || 8, C = D.config.campo_vision || 360;
+    dibujarVision(M, f.objetos, f.red, "59,130,246", R, C); dibujarVision(M, f.objetos, f.pink, "255,105,180", R, C);
+  }
+  g.fillStyle = "#3a2a10"; (M.escaleras || []).forEach(e => g.fillRect(e.x * S, e.y * S, e.w * S, e.h * S));
+  g.save(); g.shadowColor = "#33ff33"; g.shadowBlur = 8;
+  M.paredes.forEach(p => { g.fillStyle = "#0d6b0d"; g.fillRect(p.x * S, p.y * S, p.w * S, p.h * S); g.strokeStyle = "#33ff33"; g.lineWidth = 2; g.strokeRect(p.x * S + 1, p.y * S + 1, p.w * S - 2, p.h * S - 2); });
+  g.restore();
+  f.objetos.forEach(o => { if (!o[4]) obj(o[0], o[1] * S, o[2] * S, o[3]); });
+  f.proyectiles.forEach(q => { g.save(); g.shadowBlur = 8; if (q[0] === "bala") { g.fillStyle = "#fff6a0"; g.shadowColor = "#ffe000"; g.fillRect(q[1] * S - 2, q[2] * S - 2, 4, 4); } else { g.fillStyle = "#c050ff"; g.beginPath(); g.arc(q[1] * S, q[2] * S, 4, 0, 7); g.fill(); } g.restore(); });
+  (f.viboras || []).forEach(v => dibujarVibora(g, S, v[0], v[1], v[2], v[3][0], v[3][1], ms));
+  jug("red", f.red, ms); jug("pink", f.pink, ms);
+  g.fillStyle = "#33ff33"; g.font = "12px Consolas"; g.fillText((f.t / D.config.fps).toFixed(1) + " s", 8, 14);
+  g.fillStyle = "#7db0ff"; g.fillText("▲ " + "♥".repeat(Math.max(0, f.red.vidas)), 8, 30); g.fillStyle = "#ff69b4"; g.fillText("■ " + "♥".repeat(Math.max(0, f.pink.vidas)), 8, 46);
+  if (k >= F.length - 1) {
+    const r = D.resultado, t = r === "red" ? "▲ GANA RED" : r === "pink" ? "■ GANA PINK" : "☠ MUEREN LOS DOS";
+    g.font = "bold 22px Consolas"; g.textAlign = "center"; g.fillStyle = "rgba(0,0,0,.65)"; g.fillRect(0, arena.height / 2 - 26, arena.width, 40);
+    g.fillStyle = r === "red" ? "#7db0ff" : r === "pink" ? "#ff69b4" : "#ffb347"; g.fillText(t, arena.width / 2, arena.height / 2 + 4); g.textAlign = "left";
+  }
+}
+
+// =====================================================================
+// Reproducción y carga
+// =====================================================================
+function mostrar(ms) {
+  if (!D) return;
+  const f = F[k]; dibujarArena(f, ms);
+  if (f.d !== dUlt) {                       // los cerebros solo cambian cuando la IA decide (10 veces/s)
+    dUlt = f.d;
+    ["red", "pink"].forEach(n => { cerebro(n, $("c-" + n), DEC[f.d][n]); explicar(n, DEC[f.d][n]); });
+  }
+  $("scrub").value = k; $("reloj").textContent = (f.t / D.config.fps).toFixed(1) + " s";
+}
+function bucle(now) {
+  const dt = Math.min(.1, (now - ultimo) / 1000); ultimo = now;
+  if (D && jugando && k < F.length - 1) { acum += dt * D.config.fps * parseFloat($("vel").value); while (acum >= 1 && k < F.length - 1) { k++; acum -= 1; } }
+  mostrar(now); requestAnimationFrame(bucle);
+}
+function cargarDemo() {
+  const s = document.createElement("script"); s.src = "modelos/demo.js?t=" + Date.now();
+  s.onload = () => {
+    D = window.DEMO; F = D.frames; DEC = D.decisiones; k = 0; acum = 0; dUlt = -2; jugando = true; $("pausa").textContent = "⏸ Pausa";
+    $("scrub").max = F.length - 1;
+    $("msg").textContent = "Partida con las IAs de la ronda " + (D.ronda === null ? "más reciente" : D.ronda) + " · resultado: " + (D.resultado === "ambos_mueren" ? "mueren los dos" : "gana " + D.resultado);
+    s.remove();
+  };
+  s.onerror = () => { s.remove(); nueva(); };           // todavía no hay demostración: se crea una
+  document.head.appendChild(s);
+}
+async function nueva() {
+  $("nueva").disabled = true; $("msg").textContent = "⏳ jugando una partida y grabando lo que piensan… (unos segundos)";
+  const ronda = $("ronda").value === "" ? null : +$("ronda").value;
+  try {
+    const r = await fetch("/api/demo", { method: "POST", headers: CAB, body: JSON.stringify({ ronda }) });
+    const d = await r.json(); if (!d.ok) throw new Error(d.mensaje);
+    cargarDemo();
+  } catch (e) { $("msg").textContent = "⚠ " + e.message; }
+  $("nueva").disabled = false;
+}
+$("nueva").onclick = nueva;
+$("pausa").onclick = () => { jugando = !jugando; $("pausa").textContent = jugando ? "⏸ Pausa" : "▶ Seguir"; };
+$("scrub").oninput = e => { k = +e.target.value; jugando = false; $("pausa").textContent = "▶ Seguir"; };
+addEventListener("keydown", e => { if (e.code === "Space") { e.preventDefault(); $("pausa").click(); } });
+
+(async function iniciar() {
+  try {
+    const r = (await (await fetch("/api/rondas")).json()).rondas;
+    $("ronda").innerHTML = r.map(n => `<option value="${n}">ronda ${n}${n === 0 ? " (recién nacidas)" : ""}${n === r[r.length - 1] ? " (la más reciente)" : ""}</option>`).join("");
+    if (r.length) $("ronda").value = r[r.length - 1];
+  } catch (e) {}
+  cargarDemo(); requestAnimationFrame(bucle);
+})();
+</script>
+</body>
+</html>

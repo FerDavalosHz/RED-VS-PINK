@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>RED vs PINK - Centro de control</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --verde:#33ff33; --rojo:#ff4d6d; --ambar:#ffb347; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body { background:#000; color:var(--verde); font-family:Consolas,"Courier New",monospace; display:flex; flex-direction:column; }
+  body::after { content:""; position:fixed; inset:0; pointer-events:none; z-index:50;
+    background:repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px, rgba(0,0,0,.15) 3px); }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:14px; padding:10px 16px; border-bottom:1px solid var(--verde); background:rgba(0,14,0,.95); }
+  h1 { margin:0; font-size:20px; text-shadow:0 0 8px var(--verde); }
+  #estado { flex:1 1 280px; font-size:14px; line-height:1.4; }
+  #estado small { opacity:.75; }
+  button { background:#031a03; color:var(--verde); border:1px solid var(--verde); padding:8px 14px; font-family:inherit; font-size:15px; cursor:pointer; }
+  button:hover { background:#0a3a0a; }
+  button:disabled { opacity:.5; cursor:wait; }
+  #btn-principal { font-size:20px; padding:10px 26px; font-weight:bold; text-shadow:0 0 8px currentColor; }
+  #btn-principal.entrenar { background:#0b4a0b; box-shadow:0 0 16px rgba(51,255,51,.5); }
+  #btn-principal.parar { color:var(--rojo); border-color:var(--rojo); background:#2a0a10; }
+  nav { display:flex; gap:4px; padding:8px 16px 0; background:rgba(0,10,0,.95); }
+  nav button { border-bottom:none; border-radius:0; padding:7px 16px; }
+  nav button.activa { background:var(--verde); color:#000; }
+  main { flex:1; position:relative; min-height:0; }
+  iframe { position:absolute; inset:0; width:100%; height:100%; border:0; background:#000; display:none; }
+  iframe.activa { display:block; }
+  #error { display:none; background:#2a0a10; border:1px solid var(--rojo); color:#ffb3c0; padding:8px 16px; font-size:13px; }
+  #error pre { margin:6px 0 0; white-space:pre-wrap; max-height:160px; overflow:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>&gt; RED vs PINK</h1>
+  <button id="btn-principal" class="entrenar" disabled>…</button>
+  <button id="btn-reiniciar" title="Para y vuelve a lanzar el entrenamiento (para que use código nuevo)" style="display:none">↻ Reiniciar</button>
+  <div id="estado">Conectando…</div>
+</header>
+<div id="error"><b>⚠ El entrenamiento se detuvo por un error:</b><pre id="error-texto"></pre></div>
+<nav id="pestanas">
+  <button data-p="intentos" class="activa">🎮 Intentos</button>
+  <button data-p="cerebros">🧠 Cerebros</button>
+  <button data-p="graficas">📈 Progreso</button>
+  <button data-p="puntos">⚖ Puntos</button>
+  <button data-p="mapa">🗺 Mapa</button>
+</nav>
+<main>
+  <iframe id="f-intentos" data-src="intentos.html" class="activa"></iframe>
+  <iframe id="f-cerebros" data-src="cerebros.html"></iframe>
+  <iframe id="f-graficas" data-src="panel_entrenamiento.html"></iframe>
+  <iframe id="f-puntos" data-src="puntos.html"></iframe>
+  <iframe id="f-mapa" data-src="editor_mapa.html"></iframe>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const CABECERAS = { "Content-Type": "application/json", "X-RVP": "1" };
+let entrenando = false, ocupado = false;
+
+// ---- Pestañas (cada una se carga la primera vez que se abre) ----
+function abrir(nombre) {
+  document.querySelectorAll("#pestanas button").forEach(b => b.classList.toggle("activa", b.dataset.p === nombre));
+  document.querySelectorAll("iframe").forEach(f => {
+    const es = f.id === "f-" + nombre;
+    f.classList.toggle("activa", es);
+    if (es && !f.src) f.src = f.dataset.src;
+  });
+}
+document.querySelectorAll("#pestanas button").forEach(b => b.onclick = () => abrir(b.dataset.p));
+abrir("intentos");
+
+// ---- Botón principal ----
+async function accion(que) {
+  ocupado = true; $("btn-principal").disabled = true; $("btn-reiniciar").disabled = true;
+  $("btn-principal").textContent = "…";
+  try { await fetch("/api/entrenar", { method: "POST", headers: CABECERAS, body: JSON.stringify({ accion: que }) }); } catch (e) {}
+  ocupado = false; await actualizar();
+}
+$("btn-principal").onclick = () => accion(entrenando ? "parar" : "iniciar");
+$("btn-reiniciar").onclick = () => accion("reiniciar");
+
+// ---- Estado, cada 2 segundos ----
+async function actualizar() {
+  let e;
+  try { e = await (await fetch("/api/estado")).json(); }
+  catch (x) { $("estado").textContent = "⚠ No me conecto con el servidor. ¿Lo cerraste?"; $("btn-principal").disabled = true; return; }
+  entrenando = e.entrenando;
+  const p = e.progreso, filas = p ? p.filas : [], u = filas.length ? filas[filas.length - 1] : null;
+  const ronda = u ? u.ronda : 0, total = p ? p.total : "?", corridas = p && p.episodios ? p.episodios.toLocaleString("es") : "0";
+  if (!ocupado) {
+    $("btn-principal").disabled = false;
+    $("btn-principal").className = entrenando ? "parar" : "entrenar";
+    $("btn-principal").textContent = entrenando ? "■ PARAR" : "▶ ENTRENAR";
+    $("btn-reiniciar").style.display = entrenando ? "" : "none"; $("btn-reiniciar").disabled = false;
+  }
+  const ap = e.aplicado || {};
+  const marca = (v, nombre) => v === null || v === undefined ? "" : (v ? `<span style="color:#7dff7d">✔ ${nombre} en uso</span>` : `<span style="color:#ffb347">⏳ ${nombre}: guardado, aún no lo usa</span>`);
+  $("estado").innerHTML = entrenando
+    ? `🟢 <b>Entrenando</b> · ronda ${ronda}/${total} · ${corridas} corridas<br><small>${[marca(ap.mapa, "mapa"), marca(ap.puntos, "puntos")].filter(Boolean).join(" · ") || "Cambios en Puntos o en el Mapa se aplican en la siguiente partida."}</small>`
+    : (e.error ? "🔴 <b>Detenido por un error</b>" : `⚪ <b>Parado</b> · ${ronda ? "sigue donde se quedó (ronda " + ronda + ")" : "empezará desde cero"}<br><small>Pulsa ENTRENAR. No se pierde lo aprendido al parar.</small>`);
+  $("error").style.display = e.error ? "block" : "none";
+  if (e.error) $("error-texto").textContent = e.log.join("\n");
+}
+actualizar(); setInterval(actualizar, 2000);
+</script>
+</body>
+</html>

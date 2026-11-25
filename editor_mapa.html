@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Editor de mapas - Red vs Pink</title>
+<style>
+  body { background:#000; color:#33ff33; font-family:Consolas,monospace; margin:0; padding:12px; }
+  h1 { font-size:18px; margin:0 0 8px; }
+  #barra { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+  button { background:#031a03; color:#33ff33; border:1px solid #33ff33; padding:6px 10px;
+           font-family:inherit; cursor:pointer; }
+  button:hover { background:#0a3a0a; }
+  button.activo { background:#33ff33; color:#000; }
+  canvas { border:2px solid #33ff33; cursor:crosshair; display:block; }
+  #ayuda { margin-top:8px; font-size:13px; opacity:.85; }
+</style>
+</head>
+<body>
+<h1>&gt; EDITOR DE MAPAS :: RED vs PINK</h1>
+
+<div id="barra">
+  <button data-h="mover" class="activo">Mover</button>
+  <button data-h="pared">Pared</button>
+  <button data-h="escalera">Escalera</button>
+  <button data-h="spawnJ" style="color:#5fd8ff;border-color:#5fd8ff">Zona de salida: jugadores</button>
+  <button data-h="spawnO" style="color:#ffc04d;border-color:#ffc04d">Zona de salida: objetos</button>
+  <button data-h="caja">Caja</button>
+  <button data-h="pistola">Escopeta</button>
+  <button data-h="veneno">Veneno</button>
+  <button data-h="vibora" style="color:#9cff3a;border-color:#9cff3a">Víbora</button>
+  <button data-h="borrar">Borrar</button>
+  <span style="width:20px"></span>
+  <button id="btnGuardar">Guardar mapa.json</button>
+  <button id="btnCargar">Cargar...</button>
+  <button id="btnLimpiar">Vaciar mapa</button>
+  <input type="file" id="archivo" accept=".json" style="display:none">
+  <span id="estado-guardado" style="align-self:center"></span>
+</div>
+<div id="modo-salida" style="margin-bottom:6px;font-size:13px;display:none">
+  <b>Dónde salen Red, Pink y los objetos en cada partida:</b>
+  <select id="azar" style="margin:0 8px">
+    <option value="0">siempre exactamente donde los puse (0 % azar)</option>
+    <option value="50">mitad donde los puse, mitad al azar (50 %)</option>
+    <option value="80">casi siempre al azar (80 %, por defecto)</option>
+    <option value="100">siempre al azar (100 %)</option>
+  </select>
+  <span id="azar-nota" style="opacity:.9"></span>
+</div>
+<div id="info-spawn" style="margin-bottom:6px;font-size:13px;min-height:18px"></div>
+
+<canvas id="lienzo"></canvas>
+
+<div id="ayuda">
+  <b>Mover:</b> arrastra cualquier cosa &nbsp;|&nbsp;
+  <b>Pared / Escalera / Zonas de salida:</b> arrastra para dibujar un rectángulo &nbsp;|&nbsp;
+  <b>Zonas de salida</b> (azul = jugadores, naranja = objetos): cuando las partidas empiezan en posiciones al azar, salen SOLO ahí.
+  Las casillas tapadas por un muro o una caja (✕ roja) no cuentan. Si no dibujas ninguna, salen por todo el cuarto donde está Red. Pueden ser cuartos cerrados: la zona manda. &nbsp;|&nbsp;
+  <b>Caja / Escopeta / Veneno / Víbora:</b> clic para poner (la víbora persigue a quien ve, es lenta y muere con 20 perdigones; puedes poner varias) &nbsp;|&nbsp;
+  <b>Borrar:</b> clic sobre algo (o clic derecho en cualquier herramienta).
+  El triángulo azul (Red) y el cuadrado rosa (Pink) solo se pueden mover.
+</div>
+
+<script>
+// ---- Tamaño del campo: igual que ANCHO y ALTO de juego.py ----
+const ANCHO = 40, ALTO = 30;
+const T = 20;                          // píxeles por casilla
+const lienzo = document.getElementById("lienzo");
+lienzo.width = ANCHO * T;
+lienzo.height = ALTO * T;
+const ctx = lienzo.getContext("2d");
+
+// ---- El mapa: paredes (rectángulos) y objetos (cosas de 1 casilla) ----
+function mapaInicial() {
+  return {
+    ancho: ANCHO, alto: ALTO,
+    paredes: [],
+    escaleras: [],
+    spawn_jugadores: [],
+    spawn_objetos: [],
+    objetos: [
+      { tipo: "red",  x: 4,  y: 15 },
+      { tipo: "pink", x: 35, y: 15 },
+    ],
+  };
+}
+let mapa = mapaInicial();
+let herramienta = "mover";
+
+// ---- Guardado automático en el navegador (por si cierras la pestaña) ----
+// Si la página se abre desde el servidor (centro de control), cada cambio se
+// guarda directamente en mapa.json y el entrenamiento lo usa en la siguiente partida.
+const SERVIDOR = location.protocol.startsWith("http");
+let _temp = null;
+function avisoGuardado(texto, mal) {
+  const el = document.getElementById("estado-guardado");
+  if (el) { el.textContent = texto; el.style.color = mal ? "#ff4d6d" : "#33ff33"; }
+}
+function enviarAlServidor() {
+  if (!SERVIDOR) return;
+  clearTimeout(_temp);
+  _temp = setTimeout(async () => {
+    try {
+      const r = await fetch("/api/mapa", { method: "POST", body: JSON.stringify(mapa),
+        headers: { "Content-Type": "application/json", "X-RVP": "1" } });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      avisoGuardado("✔ guardado en mapa.json"); vigilarAplicado();
+    } catch (e) { avisoGuardado("⚠ no se pudo guardar: " + e.message, true); }
+  }, 300);
+}
+// Tras guardar, comprueba cada poco si el entrenamiento YA está usando ese mapa
+let _vigilando = null;
+function vigilarAplicado() {
+  clearInterval(_vigilando); let n = 0;
+  _vigilando = setInterval(async () => {
+    n++;
+    try {
+      const e = await (await fetch("/api/estado")).json();
+      if (!e.entrenando) { avisoGuardado("✔ guardado en mapa.json (el entrenamiento está parado: lo usará al arrancar)"); clearInterval(_vigilando); return; }
+      if (e.aplicado && e.aplicado.mapa) { avisoGuardado("✔ guardado y APLICADO: el entrenamiento ya usa este mapa"); clearInterval(_vigilando); return; }
+      avisoGuardado("⏳ guardado · esperando a que el entrenamiento lo recoja…");
+    } catch (x) {}
+    if (n > 30) clearInterval(_vigilando);
+  }, 1500);
+}
+// Cuánto azar hay en las salidas (se guarda en recompensas.json, igual que en la pestaña Puntos)
+let _valoresPuntos = null;
+function notaModo() {
+  const sel = document.getElementById("azar"), nota = document.getElementById("azar-nota"); if (!sel) return;
+  const p = +sel.value, j = mapa.spawn_jugadores.length > 0, o = mapa.spawn_objetos.length > 0;
+  if (p === 0) { nota.textContent = "→ Todo sale exactamente como lo dibujaste."; return; }
+  const que = !j && !o ? "Red, Pink y los objetos salen por todo el cuarto donde está Red en tu mapa (dibuja zonas para limitarlo)"
+    : j && o ? "Red y Pink salen en la zona azul y los objetos en la naranja"
+    : j ? "Red y Pink salen en la zona azul; los objetos se quedan donde los pusiste"
+    : "Los objetos salen en la zona naranja; Red y Pink se quedan donde los pusiste";
+  nota.textContent = `→ En el ${p} % de las partidas: ${que}.` + (p < 100 ? ` En el resto, todo exactamente como lo dibujaste.` : "");
+}
+async function iniciarModo() {
+  const sel = document.getElementById("azar"); if (!SERVIDOR || !sel) return;
+  try {
+    const d = await (await fetch("/api/recompensas")).json(); _valoresPuntos = d.valores;
+    const v = Math.round(_valoresPuntos.posiciones_aleatorias);
+    if (![...sel.options].some(op => +op.value === v)) sel.add(new Option(`${v} % al azar`, v));
+    sel.value = String(v); document.getElementById("modo-salida").style.display = "block"; notaModo();
+    sel.onchange = async () => {
+      _valoresPuntos.posiciones_aleatorias = +sel.value; notaModo();
+      try { await fetch("/api/recompensas", { method: "POST", headers: { "Content-Type": "application/json", "X-RVP": "1" }, body: JSON.stringify({ valores: _valoresPuntos }) }); avisoGuardado("✔ ajuste de salidas guardado · se aplica en la siguiente partida"); }
+      catch (e) { avisoGuardado("⚠ no se pudo guardar el ajuste", true); }
+    };
+  } catch (e) {}
+}
+function autoguardar() {
+  try { localStorage.setItem("redvspink_mapa", JSON.stringify(mapa)); } catch (e) {}
+  enviarAlServidor();
+}
+// Mapas guardados antes de existir la escalera no tienen esa lista: la añadimos.
+function normalizar() {
+  if (!mapa.escaleras) mapa.escaleras = [];
+  if (!mapa.spawn_jugadores) mapa.spawn_jugadores = [];
+  if (!mapa.spawn_objetos) mapa.spawn_objetos = [];
+}
+try {
+  const g = localStorage.getItem("redvspink_mapa");
+  if (g) mapa = JSON.parse(g);
+} catch (e) {}
+normalizar();
+
+// ---- Utilidades ----
+function celdaDe(e) {
+  const r = lienzo.getBoundingClientRect();
+  const x = Math.floor((e.clientX - r.left) / T);
+  const y = Math.floor((e.clientY - r.top) / T);
+  return { x: Math.max(0, Math.min(ANCHO - 1, x)), y: Math.max(0, Math.min(ALTO - 1, y)) };
+}
+// Qué hay en una casilla: primero objetos, después paredes.
+function queHay(c) {
+  for (let i = mapa.objetos.length - 1; i >= 0; i--) {
+    const o = mapa.objetos[i];
+    if (o.x === c.x && o.y === c.y) return { clase: "objeto", ref: o };
+  }
+  for (const [clase, lista] of [["escalera", mapa.escaleras], ["pared", mapa.paredes],
+                                ["spawnJ", mapa.spawn_jugadores], ["spawnO", mapa.spawn_objetos]]) {
+    for (let i = lista.length - 1; i >= 0; i--) {
+      const p = lista[i];
+      if (c.x >= p.x && c.x < p.x + p.w && c.y >= p.y && c.y < p.y + p.h)
+        return { clase, ref: p };
+    }
+  }
+  return null;
+}
+function borrar(cosa) {
+  if (cosa.clase === "pared") mapa.paredes = mapa.paredes.filter(p => p !== cosa.ref);
+  else if (cosa.clase === "escalera") mapa.escaleras = mapa.escaleras.filter(p => p !== cosa.ref);
+  else if (cosa.clase === "spawnJ") mapa.spawn_jugadores = mapa.spawn_jugadores.filter(p => p !== cosa.ref);
+  else if (cosa.clase === "spawnO") mapa.spawn_objetos = mapa.spawn_objetos.filter(p => p !== cosa.ref);
+  else if (cosa.ref.tipo !== "red" && cosa.ref.tipo !== "pink")
+    mapa.objetos = mapa.objetos.filter(o => o !== cosa.ref);
+}
+
+// ---- Dibujo ----
+function dibujarObjeto(o) {
+  const px = o.x * T, py = o.y * T;
+  ctx.lineWidth = 2;
+  if (o.tipo === "red") {                       // triángulo azul
+    ctx.fillStyle = "#3b82f6";
+    ctx.beginPath();
+    ctx.moveTo(px + T / 2, py + 2); ctx.lineTo(px + T - 2, py + T - 2); ctx.lineTo(px + 2, py + T - 2);
+    ctx.closePath(); ctx.fill();
+  } else if (o.tipo === "pink") {               // cuadrado rosa
+    ctx.fillStyle = "#ff69b4";
+    ctx.fillRect(px + 2, py + 2, T - 4, T - 4);
+  } else if (o.tipo === "caja") {
+    ctx.fillStyle = "#b8742a"; ctx.fillRect(px + 1, py + 1, T - 2, T - 2);
+    ctx.strokeStyle = "#5a360f"; ctx.strokeRect(px + 1, py + 1, T - 2, T - 2);
+    ctx.beginPath(); ctx.moveTo(px + 1, py + 1); ctx.lineTo(px + T - 1, py + T - 1); ctx.stroke();
+  } else if (o.tipo === "pistola") {
+    ctx.fillStyle = "#ffe000"; ctx.fillRect(px + 2, py + 6, T - 4, 7); ctx.fillRect(px + 2, py + 6, 5, 11);
+  } else if (o.tipo === "vibora") {                 // serpiente verde
+    ctx.strokeStyle = "#5fb814"; ctx.lineWidth = 6; ctx.lineCap = "round"; ctx.beginPath();
+    ctx.moveTo(px + 3, py + T - 6); ctx.bezierCurveTo(px + 7, py + 2, px + 11, py + T, px + T - 5, py + 7); ctx.stroke();
+    ctx.fillStyle = "#b6ff4a"; ctx.beginPath(); ctx.arc(px + T - 5, py + 7, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#ff2040"; ctx.fillRect(px + T - 6, py + 5, 2, 2);
+  } else if (o.tipo === "veneno") {
+    ctx.fillStyle = "#a020f0";
+    ctx.beginPath(); ctx.arc(px + T / 2, py + T / 2 + 2, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillRect(px + T / 2 - 2, py + 2, 4, 5);
+  }
+}
+// La escalera: dos barras laterales y peldaños. Si es más alta que ancha, los
+// peldaños van en horizontal; si es más ancha que alta, van en vertical.
+function dibujarEscalera(e) {
+  const x = e.x * T, y = e.y * T, w = e.w * T, h = e.h * T;
+  ctx.fillStyle = "#3a2a10"; ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = "#d2aa5a"; ctx.lineWidth = 2;
+  if (e.h >= e.w) {
+    ctx.beginPath(); ctx.moveTo(x + 3, y); ctx.lineTo(x + 3, y + h);
+    ctx.moveTo(x + w - 3, y); ctx.lineTo(x + w - 3, y + h); ctx.stroke();
+    for (let py = y + 5; py < y + h; py += 8) {
+      ctx.beginPath(); ctx.moveTo(x + 3, py); ctx.lineTo(x + w - 3, py); ctx.stroke();
+    }
+  } else {
+    ctx.beginPath(); ctx.moveTo(x, y + 3); ctx.lineTo(x + w, y + 3);
+    ctx.moveTo(x, y + h - 3); ctx.lineTo(x + w, y + h - 3); ctx.stroke();
+    for (let px = x + 5; px < x + w; px += 8) {
+      ctx.beginPath(); ctx.moveTo(px, y + 3); ctx.lineTo(px, y + h - 3); ctx.stroke();
+    }
+  }
+}
+// ¿Hay algo SÓLIDO en esa casilla? (una pared, o una caja)
+function esSolida(x, y) {
+  if (mapa.paredes.some(p => x >= p.x && x < p.x + p.w && y >= p.y && y < p.y + p.h)) return true;
+  return mapa.objetos.some(o => o.tipo === "caja" && o.x === x && o.y === y);
+}
+const COLOR_ZONA = { spawnJ: ["95,216,255", "#5fd8ff"], spawnO: ["255,192,77", "#ffc04d"] };
+// Dibuja una zona de salida y cuenta sus casillas válidas (las tapadas por algo sólido no cuentan)
+function dibujarZona(z, clave) {
+  const [rgb] = COLOR_ZONA[clave]; let validas = 0, tapadas = 0;
+  ctx.fillStyle = `rgba(${rgb},.16)`; ctx.fillRect(z.x * T, z.y * T, z.w * T, z.h * T);
+  ctx.strokeStyle = `rgb(${rgb})`; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+  ctx.strokeRect(z.x * T + .5, z.y * T + .5, z.w * T - 1, z.h * T - 1); ctx.setLineDash([]);
+  const marcas = [];
+  for (let x = z.x; x < z.x + z.w; x++) for (let y = z.y; y < z.y + z.h; y++) {
+    if (esSolida(x, y)) { tapadas++; marcas.push([x, y]); }
+    else { validas++; ctx.fillStyle = `rgba(${rgb},.55)`; ctx.fillRect(x * T + T / 2 - 1.5, y * T + T / 2 - 1.5, 3, 3); }
+  }
+  return { validas, tapadas, marcas };
+}
+function dibujar(previa) {
+  ctx.fillStyle = "#031003"; ctx.fillRect(0, 0, lienzo.width, lienzo.height);
+  ctx.strokeStyle = "#0b3a0b"; ctx.lineWidth = 1;          // cuadrícula
+  for (let x = 0; x <= ANCHO; x++) { ctx.beginPath(); ctx.moveTo(x * T, 0); ctx.lineTo(x * T, ALTO * T); ctx.stroke(); }
+  for (let y = 0; y <= ALTO; y++) { ctx.beginPath(); ctx.moveTo(0, y * T); ctx.lineTo(ANCHO * T, y * T); ctx.stroke(); }
+  const zonas = { spawnJ: [], spawnO: [] };                // primero las zonas, debajo de todo
+  mapa.spawn_jugadores.forEach(z => zonas.spawnJ.push(dibujarZona(z, "spawnJ")));
+  mapa.spawn_objetos.forEach(z => zonas.spawnO.push(dibujarZona(z, "spawnO")));
+  for (const p of mapa.paredes) {
+    ctx.fillStyle = "#1f8f1f"; ctx.fillRect(p.x * T, p.y * T, p.w * T, p.h * T);
+    ctx.strokeStyle = "#33ff33"; ctx.lineWidth = 2; ctx.strokeRect(p.x * T, p.y * T, p.w * T, p.h * T);
+  }
+  for (const e of mapa.escaleras) dibujarEscalera(e);
+  for (const o of mapa.objetos) dibujarObjeto(o);
+  // ✕ rojas en las casillas de las zonas que quedan tapadas por algo sólido
+  ctx.strokeStyle = "#ff4d6d"; ctx.lineWidth = 2;
+  for (const k of ["spawnJ", "spawnO"]) for (const z of zonas[k]) for (const [x, y] of z.marcas) {
+    ctx.beginPath(); ctx.moveTo(x * T + 5, y * T + 5); ctx.lineTo(x * T + T - 5, y * T + T - 5);
+    ctx.moveTo(x * T + T - 5, y * T + 5); ctx.lineTo(x * T + 5, y * T + T - 5); ctx.stroke();
+  }
+  // Salidas fijas (Red, Pink, objetos) que han quedado encima de algo sólido
+  const malas = mapa.objetos.filter(o => mapa.paredes.some(p => o.x >= p.x && o.x < p.x + p.w && o.y >= p.y && o.y < p.y + p.h)
+    || (o.tipo !== "caja" && mapa.objetos.some(c => c.tipo === "caja" && c.x === o.x && c.y === o.y)));
+  ctx.strokeStyle = "#ff4d6d"; ctx.lineWidth = 3;
+  malas.forEach(o => ctx.strokeRect(o.x * T - 1, o.y * T - 1, T + 2, T + 2));
+  if (previa) {                                            // rectángulo que se está dibujando
+    const col = herramienta === "escalera" ? "210,170,90" : herramienta === "spawnJ" ? "95,216,255" : herramienta === "spawnO" ? "255,192,77" : "51,255,51";
+    ctx.fillStyle = `rgba(${col},.4)`; ctx.fillRect(previa.x * T, previa.y * T, previa.w * T, previa.h * T);
+  }
+  resumenZonas(zonas, malas);
+}
+function resumenZonas(zonas, malas) {
+  const el = document.getElementById("info-spawn"); if (!el) return;
+  const suma = k => zonas[k].reduce((a, z) => ({ v: a.v + z.validas, t: a.t + z.tapadas }), { v: 0, t: 0 });
+  const J = suma("spawnJ"), O = suma("spawnO"), partes = [];
+  const texto = (n, s, minimo, color) => `<span style="color:${color}">${n}: ${s.v} casillas válidas` +
+    (s.t ? ` · ${s.t} tapadas por muros o cajas (no cuentan)` : "") + (s.v < minimo ? " ⚠ muy pocas" : "") + "</span>";
+  if (mapa.spawn_jugadores.length) partes.push(texto("Zona de jugadores", J, 2, "#5fd8ff"));
+  if (mapa.spawn_objetos.length) partes.push(texto("Zona de objetos", O, mapa.objetos.filter(o => o.tipo !== "red" && o.tipo !== "pink").length, "#ffc04d"));
+  if (!partes.length) partes.push('<span style="opacity:.7">Sin zonas de salida dibujadas: en las partidas al azar salen por todo el mapa.</span>');
+  if (malas.length) partes.push('<span style="color:#ff4d6d">⚠ ' + malas.length + ' cosa(s) con el marco rojo están encima de algo sólido; el juego las moverá solo.</span>');
+  el.innerHTML = partes.join(" &nbsp;|&nbsp; ");
+  notaModo();
+}
+
+// ---- Ratón ----
+let arrastre = null;      // lo que se está moviendo
+let inicioPared = null;   // dónde empezó el rectángulo de pared
+let previa = null;
+
+lienzo.addEventListener("contextmenu", e => {            // clic derecho = borrar
+  e.preventDefault();
+  const cosa = queHay(celdaDe(e));
+  if (cosa) { borrar(cosa); autoguardar(); dibujar(); }
+});
+
+lienzo.addEventListener("mousedown", e => {
+  if (e.button !== 0) return;
+  const c = celdaDe(e);
+  if (herramienta === "mover") {
+    const cosa = queHay(c);
+    if (cosa) arrastre = { cosa, dx: c.x - cosa.ref.x, dy: c.y - cosa.ref.y };
+  } else if (["pared", "escalera", "spawnJ", "spawnO"].includes(herramienta)) {
+    inicioPared = c;
+    previa = { x: c.x, y: c.y, w: 1, h: 1 };
+    dibujar(previa);
+  } else if (herramienta === "borrar") {
+    const cosa = queHay(c);
+    if (cosa) borrar(cosa);
+    autoguardar(); dibujar();
+  } else {                                               // caja, pistola, veneno
+    // Solo estorba OTRO OBJETO en esa casilla (antes también bloqueaban las zonas de salida,
+    // las escaleras y las paredes, y el clic parecía no hacer nada)
+    if (!mapa.objetos.some(o => o.x === c.x && o.y === c.y)) mapa.objetos.push({ tipo: herramienta, x: c.x, y: c.y });
+    autoguardar(); dibujar();
+  }
+});
+
+lienzo.addEventListener("mousemove", e => {
+  const c = celdaDe(e);
+  if (arrastre) {
+    const r = arrastre.cosa.ref;
+    const w = r.w || 1, h = r.h || 1;
+    r.x = Math.max(0, Math.min(ANCHO - w, c.x - arrastre.dx));
+    r.y = Math.max(0, Math.min(ALTO - h, c.y - arrastre.dy));
+    dibujar();
+  } else if (inicioPared) {
+    previa = {
+      x: Math.min(inicioPared.x, c.x), y: Math.min(inicioPared.y, c.y),
+      w: Math.abs(c.x - inicioPared.x) + 1, h: Math.abs(c.y - inicioPared.y) + 1,
+    };
+    dibujar(previa);
+  }
+});
+
+window.addEventListener("mouseup", () => {
+  if (inicioPared && previa)
+    ({ escalera: mapa.escaleras, spawnJ: mapa.spawn_jugadores, spawnO: mapa.spawn_objetos }[herramienta] || mapa.paredes).push(previa);
+  arrastre = null; inicioPared = null; previa = null;
+  autoguardar(); dibujar();
+});
+
+// ---- Botones ----
+document.querySelectorAll("[data-h]").forEach(b => b.addEventListener("click", () => {
+  herramienta = b.dataset.h;
+  document.querySelectorAll("[data-h]").forEach(x => x.classList.toggle("activo", x === b));
+}));
+
+document.getElementById("btnGuardar").addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify(mapa, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "mapa.json"; a.click();
+  URL.revokeObjectURL(a.href);
+});
+document.getElementById("btnCargar").addEventListener("click", () => document.getElementById("archivo").click());
+document.getElementById("archivo").addEventListener("change", e => {
+  const f = e.target.files[0]; if (!f) return;
+  const lector = new FileReader();
+  lector.onload = () => {
+    try { mapa = JSON.parse(lector.result); normalizar(); autoguardar(); dibujar(); }
+    catch (err) { alert("Ese archivo no es un mapa válido."); }
+  };
+  lector.readAsText(f);
+  e.target.value = "";
+});
+document.getElementById("btnLimpiar").addEventListener("click", () => {
+  if (confirm("¿Vaciar todo el mapa?")) { mapa = mapaInicial(); autoguardar(); dibujar(); }
+});
+
+dibujar();
+iniciarModo();
+if (SERVIDOR) {                    // en el centro de control, el mapa de verdad es el del servidor
+  fetch("/api/mapa").then(r => r.json()).then(m => {
+    if (m && m.paredes && m.objetos) { mapa = m; normalizar(); dibujar(); avisoGuardado("mapa cargado desde mapa.json · los cambios se guardan solos"); }
+  }).catch(() => {});
+}
+</script>
+</body>
+</html>
